@@ -19,9 +19,12 @@ tests exist and pass, not that a type was declared.
   constraint evaluation; serde round-trips for future lockfile embedding.
 - [x] **4. `machine-parser` with source locations** — collect-all-diagnostics
   validation (version/kind, identifiers, package refs, quantity dimensions,
-  intra-document references, transport parents) with dotted paths + heuristic line
-  locations. *Known limitation:* lines come from a key-scan heuristic, not spans;
-  real `SourceSpan` tracking (§11.3) is step 5's concern.
+  intra-document references, transport parents) with dotted paths and **exact
+  line:column locations** from a marked YAML event walk (`spans::SpanIndex`,
+  yaml-rust2): every key and sequence item is indexed; unrecorded paths locate at
+  their nearest ancestor. The original key-scan heuristic is deleted. Still future:
+  §11.3 range spans + `related` diagnostics, which belong to the resolver's
+  multi-source conflicts.
 - [~] **5. `machine-resolver` phases 1–7 and structured diagnostics** — the seven-phase
   skeleton runs end-to-end with a recorded `phases_run` trace: parse/schema delegate to
   the parser; phase 3 checks pinned packages against the registry (exact-version match,

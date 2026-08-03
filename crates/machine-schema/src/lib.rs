@@ -37,6 +37,9 @@ pub struct Diagnostic {
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<usize>,
+    /// 1-based column of the located key/item, when span tracking found it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggestions: Vec<String>,
 }
@@ -57,6 +60,7 @@ impl Diagnostic {
             message: message.into(),
             path: None,
             line: None,
+            column: None,
             suggestions: Vec::new(),
         }
     }
@@ -86,6 +90,9 @@ impl fmt::Display for Diagnostic {
             write!(f, " (at {p}")?;
             if let Some(l) = self.line {
                 write!(f, ", line {l}")?;
+                if let Some(c) = self.column {
+                    write!(f, ":{c}")?;
+                }
             }
             write!(f, ")")?;
         }

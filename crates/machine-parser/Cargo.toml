@@ -11,6 +11,7 @@ description = "YAML to validated Machine Graph with structured, located diagnost
 serde_yaml = { workspace = true }
 forge-machine-schema = { path = "../machine-schema" }
 forge-package-model = { path = "../package-model" }
+yaml-rust2 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
 serde_json = { workspace = true }

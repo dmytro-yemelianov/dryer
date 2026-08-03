@@ -5,16 +5,20 @@
 //! first problem, because resolver-style "list everything wrong" output is a
 //! stated project value (§11.3).
 //!
-//! Source location, v0.1 honesty note: diagnostics carry a dotted `path` and
-//! a best-effort `line` located by scanning the source text for the failing
-//! key at its expected indentation. This is a heuristic, not a span-tracking
-//! parser; replacing it with real spans (spec §11.3 `SourceSpan`) is on the
-//! roadmap and the `Diagnostic` type already leaves room for it.
+//! Source location: diagnostics carry a dotted `path` plus the exact
+//! line/column of the named key or sequence item, from a marked YAML event
+//! walk ([`spans::SpanIndex`]). A path with no exact entry (e.g. a missing
+//! key being reported) locates at its nearest recorded ancestor. The spec's
+//! full `SourceSpan` (§11.3: ranges + `related` diagnostics) remains for
+//! the resolver's multi-source conflicts.
+
+pub mod spans;
 
 use forge_machine_schema::{
     valid_identifier, Diagnostic, Dimension, MachineDoc, Quantity, API_VERSION, KIND_MACHINE,
 };
 use forge_package_model::PackageRef;
+use spans::SpanIndex;
 
 /// Result of parsing + validating one machine manifest.
 #[derive(Debug)]
@@ -73,8 +77,9 @@ pub fn parse_file(path: &std::path::Path) -> ParseOutcome {
 }
 
 fn validate(doc: &MachineDoc, source: &str, out: &mut Vec<Diagnostic>) {
+    let index = SpanIndex::build(source);
     let mut push = |d: Diagnostic| {
-        let d = locate(d, source);
+        let d = locate(d, &index);
         out.push(d);
     };
 
@@ -235,31 +240,19 @@ fn expected_limit_dimension(name: &str) -> Option<Dimension> {
     }
 }
 
-/// Best-effort line location: find the last path segment as a YAML key,
-/// preferring matches that appear after the previous segment's match.
-fn locate(mut d: Diagnostic, source: &str) -> Diagnostic {
+/// Attach the exact source location of the diagnostic's path (or its
+/// nearest recorded ancestor) from the span index.
+fn locate(mut d: Diagnostic, index: &SpanIndex) -> Diagnostic {
     if d.line.is_some() {
         return d;
     }
-    let Some(path) = d.path.clone() else { return d };
-    let mut from = 0usize;
-    let mut found: Option<usize> = None;
-    for seg in path.split('.') {
-        let seg = seg.split('[').next().unwrap_or(seg);
-        let needle = format!("{seg}:");
-        let mut hit = None;
-        for (idx, line) in source.lines().enumerate().skip(from) {
-            if line.trim_start().starts_with(&needle) {
-                hit = Some(idx);
-                break;
-            }
-        }
-        if let Some(idx) = hit {
-            found = Some(idx + 1);
-            from = idx;
-        }
+    let Some(path) = d.path.as_deref() else {
+        return d;
+    };
+    if let Some((line, col)) = index.locate(path) {
+        d.line = Some(line);
+        d.column = Some(col + 1);
     }
-    d.line = found;
     d
 }
 
@@ -359,7 +352,7 @@ safety:
     }
 
     #[test]
-    fn diagnostics_carry_paths_and_heuristic_lines() {
+    fn diagnostics_carry_paths_and_exact_locations() {
         let yaml = r#"
 api_version: forge.machine/v0.1
 kind: Machine
@@ -380,11 +373,8 @@ safety:
         let o = parse_str(yaml);
         let d = &o.diagnostics[0];
         assert_eq!(d.path.as_deref(), Some("kinematics.limits.max_velocity"));
-        assert_eq!(
-            d.line,
-            Some(14),
-            "heuristic locator should find the key line"
-        );
+        assert_eq!(d.line, Some(14), "exact key line from the span index");
+        assert_eq!(d.column, Some(5), "1-based column of the key");
     }
 
     #[test]
