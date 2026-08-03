@@ -1,0 +1,45 @@
+api_version: forge.machine/v0.1
+kind: Machine
+
+metadata:
+  name: minimal-cartesian
+  description: Smallest valid single-controller Cartesian machine
+
+packages:
+  - boards/example-mainboard@1.0.0
+  - devices/tmc2209@2.1.0
+
+controllers:
+  mainboard:
+    board: boards/example-mainboard
+    transport:
+      type: usb
+
+components:
+  x_motor:
+    type: stepper_motor
+    driver: x_driver
+    role: axis.x
+
+  x_driver:
+    type: tmc2209
+    connected_to: mainboard.motor0
+
+  hotend_heater:
+    type: heater
+    output: mainboard.heater0
+    sensor: hotend_sensor
+
+  hotend_sensor:
+    type: thermistor
+    model: generic-3950
+    input: mainboard.thermistor0
+
+kinematics:
+  type: cartesian
+  limits:
+    max_velocity: 300 mm/s
+    max_acceleration: 3000 mm/s^2
+
+safety:
+  profile: safety-profiles/desktop-fdm

@@ -1,0 +1,12 @@
+[package]
+name = "forge-machine-schema"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Machine Graph v0.1 document types, typed physical quantities, identifier rules, and shared diagnostics"
+
+[dependencies]
+serde = { workspace = true }
+serde_yaml = { workspace = true }

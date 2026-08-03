@@ -1,0 +1,5 @@
+package:
+  namespace: devices
+  name: tmc2209
+  version: 2.1.0
+  kind: device

@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeos.dev/schemas/machine.schema.json",
+  "title": "ForgeOS Machine Graph v0.1 (source graph)",
+  "description": "User-authored machine manifest. Normative reference implementation: crates/machine-schema. Quantity strings ('300 mm/s') are schema-typed as strings; their unit/dimension validation is semantic and performed by the parser.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "controllers", "components", "kinematics", "safety"],
+  "properties": {
+    "api_version": { "const": "forge.machine/v0.1" },
+    "kind": { "const": "Machine" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "packages": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*/[a-z][a-z0-9_-]*@.+$" }
+    },
+    "controllers": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": { "$ref": "#/$defs/controller" }
+    },
+    "components": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": { "$ref": "#/$defs/component" }
+    },
+    "kinematics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string" },
+        "limits": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile"],
+      "properties": { "profile": { "type": "string" } }
+    },
+    "workflows": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": { "type": "string" }
+    },
+    "calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": { "source": { "type": "string" } }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board", "transport"],
+      "properties": {
+        "board": { "type": "string" },
+        "transport": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "type": "string" },
+            "parent": { "type": "string" }
+          }
+        }
+      }
+    },
+    "component": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string" }
+      }
+    }
+  }
+}

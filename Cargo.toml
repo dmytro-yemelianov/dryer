@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/machine-schema",
+    "crates/machine-parser",
+    "crates/resource-model",
+    "crates/package-model",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+license = "Apache-2.0"
+repository = "https://github.com/dmytro-yemelianov/forgeos"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+semver = { version = "1", features = ["serde"] }

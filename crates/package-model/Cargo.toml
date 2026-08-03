@@ -1,0 +1,14 @@
+[package]
+name = "forge-package-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Package identity, manifests, dependency ranges, and local directory registry loading"
+
+[dependencies]
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+semver = { workspace = true }
+forge-machine-schema = { path = "../machine-schema" }

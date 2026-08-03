@@ -1,0 +1,16 @@
+[package]
+name = "forge-machine-parser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "YAML to validated Machine Graph with structured, located diagnostics"
+
+[dependencies]
+serde_yaml = { workspace = true }
+forge-machine-schema = { path = "../machine-schema" }
+forge-package-model = { path = "../package-model" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
