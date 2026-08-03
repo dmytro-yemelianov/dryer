@@ -19,6 +19,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-machine-resolver"
+version = "0.1.0"
+dependencies = [
+ "forge-machine-parser",
+ "forge-machine-schema",
+ "forge-package-model",
+ "forge-resource-model",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "forge-machine-schema"
 version = "0.1.0"
 dependencies = [

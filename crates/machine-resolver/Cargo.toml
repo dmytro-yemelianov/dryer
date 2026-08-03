@@ -1,0 +1,18 @@
+[package]
+name = "forge-machine-resolver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic resolution of a Machine Graph against a package registry: explicit phases, explainable assignments, structured diagnostics"
+
+[dependencies]
+serde = { workspace = true }
+forge-machine-schema = { path = "../machine-schema" }
+forge-machine-parser = { path = "../machine-parser" }
+forge-package-model = { path = "../package-model" }
+forge-resource-model = { path = "../resource-model" }
+
+[dev-dependencies]
+serde_json = { workspace = true }

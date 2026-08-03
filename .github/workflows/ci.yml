@@ -22,3 +22,5 @@ jobs:
       - run: cargo test --workspace
       - name: schema fixtures validate
         run: cargo run -p forge-machine-parser --example validate examples/minimal-cartesian/machine.yaml
+      - name: fixture machine resolves against the fixture registry
+        run: cargo run -p forge-machine-resolver --example resolve examples/minimal-cartesian/machine.yaml

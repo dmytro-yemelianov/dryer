@@ -6,6 +6,8 @@
 //! Version *resolution*, trust policy and integrity hashes belong to the
 //! future `package-registry` and `machine-resolver` crates.
 
+pub mod board;
+
 use forge_machine_schema::{valid_identifier, Diagnostic};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

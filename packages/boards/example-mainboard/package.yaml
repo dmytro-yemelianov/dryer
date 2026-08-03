@@ -1,0 +1,44 @@
+package:
+  namespace: boards
+  name: example-mainboard
+  version: 1.0.0
+  kind: board
+
+hardware:
+  manufacturer: Example
+  model: Mainboard
+  revision: "1.0"
+
+connectors:
+  motor0:
+    kind: stepper_driver_socket
+    pins:
+      step: PE11
+      dir: PE10
+      enable: PE9
+      uart: PE7
+    voltage_domain: logic_3v3
+
+  motor1:
+    kind: stepper_driver_socket
+    pins:
+      step: PD5
+      dir: PD4
+      enable: PD3
+      uart: PD1
+    voltage_domain: logic_3v3
+
+  heater0:
+    kind: power_output
+    pin: PA2
+    max_current: 5 A
+    supply: vin
+
+  thermistor0:
+    kind: analog_input
+    pin: PF4
+    pullup: 4.7 kOhm
+
+transports:
+  usb:
+    peripheral: usb_fs

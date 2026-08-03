@@ -1,0 +1,480 @@
+//! Deterministic Machine Graph resolution (spec §11), v0.1 slice.
+//!
+//! Implements the resolver's explicit phase structure (§11.2) over the
+//! Phase 0 models. Phases 1–2 delegate to `forge-machine-parser`; phases
+//! 3–4 check and load packages; phase 5 is a recorded no-op (no package
+//! templates exist yet); phases 6–7 validate and allocate **explicit
+//! connector claims** — a component saying `connected_to: mainboard.motor0`
+//! claims that connector, and the resolver checks existence, kind
+//! compatibility, and exclusivity, then records an explainable assignment
+//! (§11.5).
+//!
+//! Deliberately NOT here yet: search-based allocation ("role: axis.x →
+//! find me a socket"), electrical/timing validation (§11.2 phases 8–9),
+//! firmware partitioning, and lockfile generation. Each is a later slice;
+//! this one establishes the phase skeleton, determinism, and provenance
+//! shape they plug into.
+
+use forge_machine_schema::{Diagnostic, MachineDoc, Severity};
+use forge_package_model::{board::BoardPackageFile, LocalRegistry, PackageRef};
+use forge_resource_model::ResourceId;
+use serde::Serialize;
+use std::collections::BTreeMap;
+
+/// Resolver phases (§11.2). `phases_run` in the outcome records how far
+/// resolution progressed before stopping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Parse,
+    SchemaValidation,
+    PackageDependencies,
+    PackageLoading,
+    GraphExpansion,
+    CapabilityMatching,
+    ResourceAllocation,
+}
+
+/// One explainable assignment (§11.5): which requirement asked, what was
+/// considered, what was chosen.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Assignment {
+    /// The component that claimed the resource.
+    pub requested_by: String,
+    /// The attribute the claim came from (`connected_to`, `output`, `input`).
+    pub via: String,
+    /// The chosen concrete resource (`controller.connector`).
+    pub resource: ResourceId,
+    /// Connector kind of the chosen resource.
+    pub connector_kind: String,
+    /// Candidates considered. Explicit claims consider exactly one; the
+    /// future search-based allocator will list every kind-compatible
+    /// connector here.
+    pub candidates_considered: Vec<String>,
+    /// Human-readable constraints applied to accept the claim.
+    pub constraints_applied: Vec<String>,
+}
+
+/// The resolved graph, v0.1: deterministic assignments keyed by component.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ResolvedGraph {
+    pub assignments: BTreeMap<String, Vec<Assignment>>,
+}
+
+impl ResolvedGraph {
+    /// Explain one component's assignments (the CLI `explain` seed, §11.5).
+    pub fn explain(&self, component: &str) -> Option<String> {
+        let list = self.assignments.get(component)?;
+        let mut s = String::new();
+        for a in list {
+            s.push_str(&format!(
+                "{} --{}--> {} (kind {})\n  candidates: {}\n  constraints: {}\n",
+                a.requested_by,
+                a.via,
+                a.resource.0,
+                a.connector_kind,
+                a.candidates_considered.join(", "),
+                a.constraints_applied.join("; "),
+            ));
+        }
+        Some(s)
+    }
+}
+
+/// Everything a resolution run produces (§11.1, v0.1 subset).
+#[derive(Debug)]
+pub struct ResolveOutcome {
+    pub resolved: Option<ResolvedGraph>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub phases_run: Vec<Phase>,
+}
+
+impl ResolveOutcome {
+    pub fn is_ok(&self) -> bool {
+        self.resolved.is_some()
+            && !self
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error)
+    }
+}
+
+/// Resolve a machine manifest source against a local package registry.
+///
+/// Determinism (§11.4): all iteration is over `BTreeMap`s, so identical
+/// inputs produce identical outcomes including diagnostic order.
+pub fn resolve_source(source: &str, registry: &LocalRegistry) -> ResolveOutcome {
+    let mut phases_run = vec![Phase::Parse, Phase::SchemaValidation];
+    let parsed = forge_machine_parser::parse_str(source);
+    let mut diagnostics = parsed.diagnostics;
+    let Some(doc) = parsed.doc else {
+        return ResolveOutcome {
+            resolved: None,
+            diagnostics,
+            phases_run,
+        };
+    };
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return ResolveOutcome {
+            resolved: None,
+            diagnostics,
+            phases_run,
+        };
+    }
+    resolve_doc(&doc, registry, &mut diagnostics, &mut phases_run)
+}
+
+fn resolve_doc(
+    doc: &MachineDoc,
+    registry: &LocalRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+    phases_run: &mut Vec<Phase>,
+) -> ResolveOutcome {
+    let fail = |diagnostics: Vec<Diagnostic>, phases_run: Vec<Phase>| ResolveOutcome {
+        resolved: None,
+        diagnostics,
+        phases_run,
+    };
+
+    // --- Phase 3: package dependency resolution ------------------------
+    phases_run.push(Phase::PackageDependencies);
+    let mut pinned: BTreeMap<String, PackageRef> = BTreeMap::new();
+    for pkg in &doc.packages {
+        // syntax already validated by the parser
+        if let Ok(r) = PackageRef::parse(pkg) {
+            pinned.insert(format!("{}/{}", r.namespace, r.name), r);
+        }
+    }
+    for (path, r) in &pinned {
+        match registry.find(&r.namespace, &r.name) {
+            None => diagnostics.push(
+                Diagnostic::error("E1100", format!("package '{path}' is not in the registry"))
+                    .at("packages"),
+            ),
+            Some(found) if found.reference.version != r.version => diagnostics.push(
+                Diagnostic::error(
+                    "E1101",
+                    format!(
+                        "package '{path}' pinned at {} but the registry has {}",
+                        r.version, found.reference.version
+                    ),
+                )
+                .at("packages"),
+            ),
+            Some(found) => {
+                // dependency ranges of the loaded package must be satisfied
+                // by other pins (no transitive solving in v0.1 — flat pins).
+                for (dep, d) in &found.manifest.dependencies {
+                    let Ok(req) = d.requirement() else { continue };
+                    match pinned.get(dep) {
+                        None => diagnostics.push(Diagnostic::warning(
+                            "E1102",
+                            format!(
+                                "'{path}' depends on '{dep}' ({req}) which is not pinned in this machine"
+                            ),
+                        )),
+                        Some(dep_pin) if !req.matches(&dep_pin.version) => {
+                            diagnostics.push(Diagnostic::error(
+                                "E1103",
+                                format!(
+                                    "'{path}' requires '{dep}' {req} but the machine pins {}",
+                                    dep_pin.version
+                                ),
+                            ))
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
+        }
+    }
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return fail(std::mem::take(diagnostics), phases_run.clone());
+    }
+
+    // --- Phase 4: package loading (board payloads per controller) ------
+    phases_run.push(Phase::PackageLoading);
+    let mut boards: BTreeMap<String, BoardPackageFile> = BTreeMap::new();
+    for (cname, ctrl) in &doc.controllers {
+        let Some((ns, name)) = ctrl.board.split_once('/') else {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E1110",
+                    format!(
+                        "controller '{cname}': board '{}' must be 'namespace/name'",
+                        ctrl.board
+                    ),
+                )
+                .at(format!("controllers.{cname}.board")),
+            );
+            continue;
+        };
+        match registry.find(ns, name) {
+            None => diagnostics.push(
+                Diagnostic::error(
+                    "E1111",
+                    format!(
+                        "controller '{cname}': board package '{}' is not in the registry",
+                        ctrl.board
+                    ),
+                )
+                .at(format!("controllers.{cname}.board")),
+            ),
+            Some(pkg) => match pkg.board_payload() {
+                Ok(payload) => {
+                    // transport must exist on the board
+                    if !payload.transports.contains_key(&ctrl.transport.kind) {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "E1120",
+                                format!(
+                                    "controller '{cname}': board '{}' has no '{}' transport",
+                                    ctrl.board, ctrl.transport.kind
+                                ),
+                            )
+                            .at(format!("controllers.{cname}.transport")),
+                        );
+                    }
+                    boards.insert(cname.clone(), payload);
+                }
+                Err(errs) => diagnostics.extend(errs),
+            },
+        }
+    }
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return fail(std::mem::take(diagnostics), phases_run.clone());
+    }
+
+    // --- Phase 5: graph expansion (recorded no-op in v0.1) -------------
+    // No package templates exist yet (§5.5 'expanded graph'); recording the
+    // phase keeps `phases_run` an honest trace once expansion arrives.
+    phases_run.push(Phase::GraphExpansion);
+
+    // --- Phase 6+7: capability matching & explicit-claim allocation ----
+    phases_run.push(Phase::CapabilityMatching);
+    phases_run.push(Phase::ResourceAllocation);
+
+    let mut resolved = ResolvedGraph::default();
+    // connector -> first claimant, for exclusivity conflicts
+    let mut claims: BTreeMap<String, String> = BTreeMap::new();
+
+    for (cname, comp) in &doc.components {
+        for (attr, val) in &comp.attributes {
+            let Some(target) = val.as_str() else { continue };
+            let Some(expected_kind) = claim_kind(attr) else {
+                continue;
+            };
+            // parser already guaranteed 'controller.port' shape + controller exists
+            let Some((ctrl, port)) = target.split_once('.') else {
+                continue;
+            };
+            let Some(board) = boards.get(ctrl) else {
+                continue;
+            };
+
+            let Some(connector) = board.connectors.get(port) else {
+                let known: Vec<&String> = board.connectors.keys().collect();
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1201",
+                        format!(
+                            "component '{cname}': controller '{ctrl}' has no connector '{port}'"
+                        ),
+                    )
+                    .at(format!("components.{cname}.{attr}"))
+                    .suggest(format!("available connectors: {known:?}")),
+                );
+                continue;
+            };
+
+            if connector.kind != expected_kind {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1202",
+                        format!(
+                            "component '{cname}': '{target}' is a {} connector, but '{attr}' requires {expected_kind}",
+                            connector.kind
+                        ),
+                    )
+                    .at(format!("components.{cname}.{attr}")),
+                );
+                continue;
+            }
+
+            if let Some(prev) = claims.get(target) {
+                // §11.3-style conflict with actionable suggestions:
+                // list free connectors of the same kind on the same board.
+                let free: Vec<String> = board
+                    .connectors
+                    .iter()
+                    .filter(|(id, c)| {
+                        c.kind == expected_kind && !claims.contains_key(&format!("{ctrl}.{id}"))
+                    })
+                    .map(|(id, _)| format!("{ctrl}.{id}"))
+                    .collect();
+                let mut d = Diagnostic::error(
+                    "E1200",
+                    format!(
+                        "connector conflict: '{target}' is claimed by both '{prev}' and '{cname}'"
+                    ),
+                )
+                .at(format!("components.{cname}.{attr}"));
+                if free.is_empty() {
+                    d = d.suggest(format!(
+                        "no free {expected_kind} connectors remain on '{ctrl}'"
+                    ));
+                } else {
+                    d = d.suggest(format!("move '{cname}' to one of: {}", free.join(", ")));
+                }
+                diagnostics.push(d);
+                continue;
+            }
+
+            claims.insert(target.to_string(), cname.clone());
+            resolved
+                .assignments
+                .entry(cname.clone())
+                .or_default()
+                .push(Assignment {
+                    requested_by: cname.clone(),
+                    via: attr.clone(),
+                    resource: ResourceId(target.to_string()),
+                    connector_kind: connector.kind.clone(),
+                    candidates_considered: vec![target.to_string()],
+                    constraints_applied: vec![
+                        format!("explicit claim of '{target}'"),
+                        format!("connector kind == {expected_kind}"),
+                        "exclusive ownership".to_string(),
+                    ],
+                });
+        }
+    }
+
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return fail(std::mem::take(diagnostics), phases_run.clone());
+    }
+    ResolveOutcome {
+        resolved: Some(resolved),
+        diagnostics: std::mem::take(diagnostics),
+        phases_run: phases_run.clone(),
+    }
+}
+
+/// v0.1 claim-compatibility table: which connector kind each claiming
+/// attribute requires. This is a deliberate stopgap — once device packages
+/// carry requirement payloads (§9), compatibility comes from the claimed
+/// component's device package, not from the attribute name.
+fn claim_kind(attr: &str) -> Option<&'static str> {
+    match attr {
+        "connected_to" => Some("stepper_driver_socket"),
+        "output" => Some("power_output"),
+        "input" => Some("analog_input"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn registry() -> LocalRegistry {
+        LocalRegistry::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages"))
+    }
+
+    fn fixture() -> String {
+        std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples/minimal-cartesian/machine.yaml"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_fixture_machine_resolves_with_expected_assignments() {
+        let o = resolve_source(&fixture(), &registry());
+        assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
+        assert_eq!(o.phases_run.len(), 7, "all seven phases ran");
+        let g = o.resolved.unwrap();
+        let x = &g.assignments["x_driver"][0];
+        assert_eq!(x.resource.0, "mainboard.motor0");
+        assert_eq!(x.connector_kind, "stepper_driver_socket");
+        let h = &g.assignments["hotend_heater"][0];
+        assert_eq!(h.resource.0, "mainboard.heater0");
+        let s = &g.assignments["hotend_sensor"][0];
+        assert_eq!(s.resource.0, "mainboard.thermistor0");
+        assert!(g.explain("x_driver").unwrap().contains("explicit claim"));
+    }
+
+    #[test]
+    fn resolution_is_deterministic() {
+        let a = resolve_source(&fixture(), &registry());
+        let b = resolve_source(&fixture(), &registry());
+        assert_eq!(a.resolved, b.resolved);
+        assert_eq!(
+            serde_json::to_string(&a.resolved).unwrap(),
+            serde_json::to_string(&b.resolved).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_double_claim_is_a_conflict_with_actionable_suggestions() {
+        let doubled = fixture().replace(
+            "  x_driver:\n    type: tmc2209\n    connected_to: mainboard.motor0",
+            "  x_driver:\n    type: tmc2209\n    connected_to: mainboard.motor0\n\n  y_driver:\n    type: tmc2209\n    connected_to: mainboard.motor0",
+        );
+        assert_ne!(doubled, fixture(), "replacement must apply");
+        let o = resolve_source(&doubled, &registry());
+        assert!(!o.is_ok());
+        let conflict = o
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E1200")
+            .expect("conflict diagnostic");
+        assert!(conflict.message.contains("x_driver") && conflict.message.contains("y_driver"));
+        assert!(
+            conflict.suggestions[0].contains("mainboard.motor1"),
+            "should suggest the free socket: {:?}",
+            conflict.suggestions
+        );
+    }
+
+    #[test]
+    fn wrong_connector_kind_is_rejected() {
+        let wrong = fixture().replace("output: mainboard.heater0", "output: mainboard.thermistor0");
+        let o = resolve_source(&wrong, &registry());
+        assert!(!o.is_ok());
+        assert!(o.diagnostics.iter().any(|d| d.code == "E1202"));
+    }
+
+    #[test]
+    fn unknown_connector_lists_available_ones() {
+        let wrong = fixture().replace(
+            "connected_to: mainboard.motor0",
+            "connected_to: mainboard.motor9",
+        );
+        let o = resolve_source(&wrong, &registry());
+        let d = o.diagnostics.iter().find(|d| d.code == "E1201").unwrap();
+        assert!(d.suggestions[0].contains("motor0"));
+    }
+
+    #[test]
+    fn missing_package_and_version_mismatch_stop_resolution_in_phase_3() {
+        let missing =
+            fixture().replace("boards/example-mainboard@1.0.0", "boards/ghost-board@1.0.0");
+        let o = resolve_source(&missing, &registry());
+        assert!(o.diagnostics.iter().any(|d| d.code == "E1100"));
+        assert_eq!(*o.phases_run.last().unwrap(), Phase::PackageDependencies);
+
+        let mismatched = fixture().replace("devices/tmc2209@2.1.0", "devices/tmc2209@9.9.9");
+        let o = resolve_source(&mismatched, &registry());
+        assert!(o.diagnostics.iter().any(|d| d.code == "E1101"));
+    }
+
+    #[test]
+    fn unknown_transport_on_the_board_is_an_error() {
+        let bad = fixture().replace("type: usb", "type: ethernet");
+        let o = resolve_source(&bad, &registry());
+        assert!(o.diagnostics.iter().any(|d| d.code == "E1120"));
+    }
+}

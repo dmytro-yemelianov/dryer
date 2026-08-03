@@ -22,7 +22,18 @@ tests exist and pass, not that a type was declared.
   intra-document references, transport parents) with dotted paths + heuristic line
   locations. *Known limitation:* lines come from a key-scan heuristic, not spans;
   real `SourceSpan` tracking (§11.3) is step 5's concern.
-- [ ] **5. `machine-resolver` phases 1–7 and structured diagnostics**
+- [~] **5. `machine-resolver` phases 1–7 and structured diagnostics** — the seven-phase
+  skeleton runs end-to-end with a recorded `phases_run` trace: parse/schema delegate to
+  the parser; phase 3 checks pinned packages against the registry (exact-version match,
+  flat-pin dependency-range checks — no transitive solving yet); phase 4 loads board
+  payloads (§8 connectors/transports, quantity-validated `max_current`/`pullup`) and
+  checks controller transports; phase 5 is a recorded no-op (no templates exist);
+  phases 6–7 validate and allocate **explicit connector claims** with exclusivity,
+  kind-compatibility (a v0 attribute→kind table, documented as a stopgap for device-
+  package requirements §9), §11.5-style explainable assignments, and E1200 conflicts
+  that suggest free same-kind connectors. Determinism pinned by test (byte-equal JSON
+  across runs). *Remaining for [x]:* search-based allocation from roles/requirements,
+  real `SourceSpan`s, transitive dependency resolution, graph expansion.
 - [ ] **6. Electrical, timing, and safety validation**
 - [ ] **7. `machine-lock` canonical serialization and hashing**
 - [ ] **8. Klipper config and build-parameter export** *(license/provenance record

@@ -32,7 +32,8 @@ spec, Draft v0.1). Key principles:
 | `crates/machine-schema` | Machine Graph v0.1 document types, typed physical quantities, identifier rules, shared diagnostics |
 | `crates/machine-parser` | YAML → validated Machine Graph with structured, located diagnostics |
 | `crates/resource-model` | Generic hardware resource/constraint/preference model used by the future resolver |
-| `crates/package-model` | Package identity (`namespace/name@version`), manifests, dependency ranges, local directory registry |
+| `crates/package-model` | Package identity (`namespace/name@version`), manifests, board payloads, dependency ranges, local directory registry |
+| `crates/machine-resolver` | Deterministic resolution: 7 explicit phases, explicit-claim connector allocation, explainable assignments, conflict diagnostics with suggestions |
 
 ```bash
 cargo test --workspace
