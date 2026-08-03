@@ -40,6 +40,7 @@ pub enum Phase {
     CapabilityMatching,
     ResourceAllocation,
     ElectricalValidation,
+    SafetyValidation,
 }
 
 /// One explainable assignment (§11.5): which requirement asked, what was
@@ -504,6 +505,92 @@ fn resolve_doc(
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return fail(std::mem::take(diagnostics), phases_run.clone());
     }
+
+    // --- Phase 10: safety validation (coverage check) --------------------
+    // The profile must exist as a safety-profile package, and every
+    // component that resolved a hazardous output (a power_output connector)
+    // must belong to a class the profile covers (§18.2). Classes may add
+    // structural requirements (requires_sensor, §18.3). Compiling safe
+    // states into firmware artifacts is a later phase; this one guarantees
+    // no hazardous output escapes policy — the §30 "no unresolved safety
+    // defaults" gate.
+    phases_run.push(Phase::SafetyValidation);
+    let Some((s_ns, s_name)) = doc.safety.profile.split_once('/') else {
+        diagnostics.push(
+            Diagnostic::error(
+                "E1500",
+                format!(
+                    "safety profile '{}' must be 'namespace/name'",
+                    doc.safety.profile
+                ),
+            )
+            .at("safety.profile"),
+        );
+        return fail(std::mem::take(diagnostics), phases_run.clone());
+    };
+    match registry.find(s_ns, s_name) {
+        None => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E1500",
+                    format!(
+                        "safety profile '{}' is not in the registry",
+                        doc.safety.profile
+                    ),
+                )
+                .at("safety.profile"),
+            );
+        }
+        Some(pkg) => match pkg.safety_profile_payload() {
+            Err(errs) => diagnostics.extend(errs),
+            Ok(profile) => {
+                for (cname, comp) in &doc.components {
+                    let hazardous = resolved
+                        .assignments
+                        .get(cname)
+                        .into_iter()
+                        .flatten()
+                        .any(|a| a.connector_kind == "power_output");
+                    let policy = profile.classes.get(&comp.kind);
+                    if hazardous && policy.is_none() {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "E1501",
+                                format!(
+                                    "component '{cname}' drives a power output but class '{}' has no policy in '{}'",
+                                    comp.kind, doc.safety.profile
+                                ),
+                            )
+                            .at(format!("components.{cname}"))
+                            .suggest(format!(
+                                "add a '{}' class to the safety profile or use a covered class",
+                                comp.kind
+                            )),
+                        );
+                    }
+                    if let Some(policy) = policy {
+                        if policy.requires_sensor && !comp.attributes.contains_key("sensor") {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "E1502",
+                                    format!(
+                                        "class '{}' requires a sensor, but component '{cname}' declares none",
+                                        comp.kind
+                                    ),
+                                )
+                                .at(format!("components.{cname}"))
+                                .suggest("add 'sensor: <component>' referencing a sensor component"),
+                            );
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return fail(std::mem::take(diagnostics), phases_run.clone());
+    }
     ResolveOutcome {
         resolved: Some(resolved),
         diagnostics: std::mem::take(diagnostics),
@@ -545,7 +632,8 @@ mod tests {
     fn the_fixture_machine_resolves_with_expected_assignments() {
         let o = resolve_source(&fixture(), &registry());
         assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
-        assert_eq!(o.phases_run.len(), 8, "all eight phases ran");
+        assert_eq!(o.phases_run.len(), 9, "all nine phases ran");
+        assert_eq!(*o.phases_run.last().unwrap(), Phase::SafetyValidation);
         let g = o.resolved.unwrap();
         let x = &g.assignments["x_driver"][0];
         assert_eq!(x.resource.0, "mainboard.motor0");
@@ -687,5 +775,36 @@ mod tests {
         let bad = fixture().replace("current: 2 A", "current: quite a lot");
         let o = resolve_source(&bad, &registry());
         assert!(o.diagnostics.iter().any(|d| d.code == "E1301"));
+    }
+
+    #[test]
+    fn a_missing_safety_profile_fails_resolution() {
+        let bad = fixture().replace("safety-profiles/desktop-fdm", "safety-profiles/ghost");
+        let o = resolve_source(&bad, &registry());
+        assert!(!o.is_ok());
+        assert!(o.diagnostics.iter().any(|d| d.code == "E1500"));
+        assert_eq!(*o.phases_run.last().unwrap(), Phase::SafetyValidation);
+    }
+
+    /// A component driving a power output whose class the profile does not
+    /// cover is the §30 "unresolved safety default" — a hard error.
+    #[test]
+    fn an_uncovered_hazardous_output_is_rejected() {
+        let laser = fixture().replace("    type: heater", "    type: laser");
+        assert_ne!(laser, fixture());
+        let o = resolve_source(&laser, &registry());
+        assert!(!o.is_ok());
+        let d = o.diagnostics.iter().find(|d| d.code == "E1501").unwrap();
+        assert!(d.message.contains("laser"));
+    }
+
+    #[test]
+    fn a_sensorless_heater_violates_the_profile() {
+        let sensorless = fixture().replace("    sensor: hotend_sensor\n", "");
+        assert_ne!(sensorless, fixture());
+        let o = resolve_source(&sensorless, &registry());
+        assert!(!o.is_ok());
+        let d = o.diagnostics.iter().find(|d| d.code == "E1502").unwrap();
+        assert!(d.message.contains("hotend_heater"));
     }
 }

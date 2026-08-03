@@ -41,16 +41,22 @@ tests exist and pass, not that a type was declared.
 - [~] **6. Electrical, timing, and safety validation** — first electrical check landed
   as resolver phase 8: a component's declared `current` draw is quantity-parsed and
   compared against the assigned connector's `max_current` (E1300; malformed draw
-  E1301). *Remaining:* voltage-domain compatibility, timing budgets, safety-profile
-  validation — safety profiles have no package payload yet.
+  E1301). Slice 3 added **safety validation** (resolver phase 10 analogue): safety
+  profiles are real packages (`classes` → `safe_state`/`heartbeat_timeout` (typed
+  Time)/`requires_sensor`, §18.2–§18.3); the machine's profile must exist (E1500),
+  every component driving a `power_output` must belong to a covered class (E1501 —
+  the §30 "no unresolved safety defaults" gate), and class requirements are enforced
+  (sensorless heater → E1502). *Remaining:* voltage-domain compatibility, timing
+  budgets, compiling safe states into controller artifacts (firmware phases).
 - [~] **7. `machine-lock` canonical serialization and hashing** — `forge-machine-lock`
   produces a deterministic lockfile (canonical JSON bytes + `sha256:` lock hash; YAML
   on disk) binding the machine-source hash, exact package versions with manifest
   hashes, resolver version, and per-controller resolved resources. Golden at
-  `examples/minimal-cartesian/machine.lock`, drift-gated in CI. *Remaining for [x]:*
-  registry source identity, full package content digests (§6.6), firmware targets,
-  protocol versions, feature flags, safety-profile versions — each gated on machinery
-  that does not exist yet (stated in the crate docs).
+  `examples/minimal-cartesian/machine.lock`, drift-gated in CI. Slice 3 added the
+  pinned `safety_profile` (id + manifest hash, §12). *Remaining for [x]:* registry
+  source identity, full package content digests (§6.6), firmware targets, protocol
+  versions, feature flags — each gated on machinery that does not exist yet (stated
+  in the crate docs).
 - [ ] **8. Klipper config and build-parameter export** *(license/provenance record
   required first — §23.5)*
 - [ ] **9. Simulated controller and end-to-end golden tests**

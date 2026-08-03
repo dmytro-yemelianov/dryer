@@ -1,0 +1,20 @@
+package:
+  namespace: safety-profiles
+  name: desktop-fdm
+  version: 1.0.0
+  kind: safety-profile
+
+# Per component-class safety policy (spec §18.2). A machine using this
+# profile must cover every hazardous output with one of these classes;
+# safe states are compiled toward controller artifacts in later phases.
+classes:
+  heater:
+    safe_state: "off"
+    heartbeat_timeout: 500 ms
+    requires_sensor: true
+
+  fan:
+    safe_state: "off"
+
+  stepper_motor:
+    safe_state: disabled

@@ -6,6 +6,9 @@ packages:
   manifest_hash: sha256:b970a4fe451aabb8f119eeeb65557d6eec4b4c8ab4b194bd17554cb1c9f3d54d
 - id: devices/tmc2209@2.1.0
   manifest_hash: sha256:78572266b347723d6881ad82308f3e524a3b9fc6ca37e131993821b7bf380b7c
+safety_profile:
+  id: safety-profiles/desktop-fdm@1.0.0
+  manifest_hash: sha256:34abc60fdff7f998703ba423a00e5572f307b1bd642395f0e94e5ba5d28a1efd
 controllers:
   mainboard:
     board: boards/example-mainboard

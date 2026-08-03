@@ -5,23 +5,16 @@
   "description": "Generated capture of one successful resolution. Users do not edit it. Normative reference implementation: crates/machine-lock. v1 field scope is deliberately partial (no registry source, firmware targets, protocol versions, feature flags, or safety-profile versions yet) — see the crate docs.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["lock_version", "machine_hash", "resolver_version", "packages", "controllers"],
+  "required": ["lock_version", "machine_hash", "resolver_version", "packages", "safety_profile", "controllers"],
   "properties": {
     "lock_version": { "const": 1 },
     "machine_hash": { "$ref": "#/$defs/sha256" },
     "resolver_version": { "type": "string" },
     "packages": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "manifest_hash"],
-        "properties": {
-          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*/[a-z][a-z0-9_-]*@.+$" },
-          "manifest_hash": { "$ref": "#/$defs/sha256" }
-        }
-      }
+      "items": { "$ref": "#/$defs/locked_package" }
     },
+    "safety_profile": { "$ref": "#/$defs/locked_package" },
     "controllers": {
       "type": "object",
       "additionalProperties": {
@@ -39,6 +32,15 @@
     }
   },
   "$defs": {
-    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "locked_package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "manifest_hash"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*/[a-z][a-z0-9_-]*@.+$" },
+        "manifest_hash": { "$ref": "#/$defs/sha256" }
+      }
+    }
   }
 }

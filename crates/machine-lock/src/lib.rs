@@ -2,12 +2,13 @@
 //! capture of one successful resolution.
 //!
 //! v0.1 field scope, stated honestly: exact package versions + manifest
-//! hashes, the machine-source hash, resolver identity, and per-controller
-//! resolved resources. Deferred to later slices (each needs machinery that
-//! does not exist yet): registry source identity, firmware target triples
-//! and build profiles, protocol versions, feature flags, safety-profile
-//! versions — and the package hash covers `package.yaml` only, not the
-//! full content tree (§6.6's content digest arrives with the registry).
+//! hashes, the machine-source hash, resolver identity, the pinned safety
+//! profile, and per-controller resolved resources. Deferred to later
+//! slices (each needs machinery that does not exist yet): registry source
+//! identity, firmware target triples and build profiles, protocol
+//! versions, feature flags — and the package hash covers `package.yaml`
+//! only, not the full content tree (§6.6's content digest arrives with
+//! the registry).
 //!
 //! Canonical form: JSON with every map a `BTreeMap`, so byte-identical
 //! lockfiles for identical inputs. The on-disk file is YAML for humans;
@@ -30,6 +31,9 @@ pub struct Lockfile {
     /// The resolver that produced this (crate version; §12 'resolver version').
     pub resolver_version: String,
     pub packages: Vec<LockedPackage>,
+    /// The safety profile the resolution validated against (§12 requires
+    /// the lock to pin the safety-profile version).
+    pub safety_profile: LockedPackage,
     pub controllers: BTreeMap<String, LockedController>,
 }
 
@@ -114,11 +118,43 @@ pub fn lock(
         }
     }
 
+    let safety_profile = {
+        let Some((ns, name)) = doc.safety.profile.split_once('/') else {
+            return Err(vec![Diagnostic::error(
+                "E1401",
+                format!(
+                    "safety profile '{}' is not 'namespace/name'",
+                    doc.safety.profile
+                ),
+            )]);
+        };
+        let Some(found) = registry.find(ns, name) else {
+            return Err(vec![Diagnostic::error(
+                "E1401",
+                format!(
+                    "safety profile '{}' is not in the registry",
+                    doc.safety.profile
+                ),
+            )]);
+        };
+        let bytes = std::fs::read(found.dir.join("package.yaml")).map_err(|e| {
+            vec![Diagnostic::error(
+                "E1400",
+                format!("cannot hash {}: {e}", found.reference),
+            )]
+        })?;
+        LockedPackage {
+            id: found.reference.to_string(),
+            manifest_hash: sha256_hex(&bytes),
+        }
+    };
+
     Ok(Lockfile {
         lock_version: LOCK_VERSION,
         machine_hash: sha256_hex(source.as_bytes()),
         resolver_version: env!("CARGO_PKG_VERSION").to_string(),
         packages,
+        safety_profile,
         controllers,
     })
 }
@@ -190,6 +226,8 @@ mod tests {
             .iter()
             .all(|p| p.manifest_hash.starts_with("sha256:")));
         assert!(l.machine_hash.starts_with("sha256:"));
+        assert_eq!(l.safety_profile.id, "safety-profiles/desktop-fdm@1.0.0");
+        assert!(l.safety_profile.manifest_hash.starts_with("sha256:"));
     }
 
     #[test]
