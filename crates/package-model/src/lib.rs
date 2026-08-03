@@ -7,6 +7,7 @@
 //! future `package-registry` and `machine-resolver` crates.
 
 pub mod board;
+pub mod device;
 
 use forge_machine_schema::{valid_identifier, Diagnostic};
 use serde::{Deserialize, Serialize};

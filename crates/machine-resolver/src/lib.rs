@@ -9,13 +9,19 @@
 //! compatibility, and exclusivity, then records an explainable assignment
 //! (§11.5).
 //!
-//! Deliberately NOT here yet: search-based allocation ("role: axis.x →
-//! find me a socket"), electrical/timing validation (§11.2 phases 8–9),
-//! firmware partitioning, and lockfile generation. Each is a later slice;
-//! this one establishes the phase skeleton, determinism, and provenance
-//! shape they plug into.
+//! Slice 2 added: **search-based allocation** — a component with no
+//! explicit claim whose type names a device package with a
+//! `requires.connector` payload (§9) gets the first free kind-compatible
+//! connector in stable order, with every candidate recorded — and the
+//! first **electrical validation** check (§11.2 phase 8): a component's
+//! declared `current` draw must fit the connector's `max_current`.
+//!
+//! Deliberately NOT here yet: timing validation, firmware partitioning,
+//! graph expansion (templates), transitive dependency solving, and
+//! `SourceSpan` tracking. Each is a later slice; lockfile generation
+//! lives in `forge-machine-lock`.
 
-use forge_machine_schema::{Diagnostic, MachineDoc, Severity};
+use forge_machine_schema::{Diagnostic, Dimension, MachineDoc, Quantity, Severity};
 use forge_package_model::{board::BoardPackageFile, LocalRegistry, PackageRef};
 use forge_resource_model::ResourceId;
 use serde::Serialize;
@@ -33,6 +39,7 @@ pub enum Phase {
     GraphExpansion,
     CapabilityMatching,
     ResourceAllocation,
+    ElectricalValidation,
 }
 
 /// One explainable assignment (§11.5): which requirement asked, what was
@@ -350,6 +357,150 @@ fn resolve_doc(
         }
     }
 
+    // Search-based allocation: a component with no explicit claim, whose
+    // type names a device package that declares `requires.connector`, gets
+    // the first free connector of that kind — §11.4 stable ordering: the
+    // component iteration is BTreeMap order, and candidates are scanned in
+    // BTreeMap connector-id order. All kind-compatible connectors land in
+    // `candidates_considered` (§11.5), free or not.
+    for (cname, comp) in &doc.components {
+        if comp
+            .attributes
+            .iter()
+            .any(|(attr, v)| claim_kind(attr).is_some() && v.as_str().is_some())
+        {
+            continue; // explicitly claimed above
+        }
+        let Some(dev) = registry.find("devices", &comp.kind) else {
+            continue; // no device package for this type — nothing to search for
+        };
+        let Ok(payload) = dev.device_payload() else {
+            continue; // payload errors already surface when explicitly used
+        };
+        let Some(required_kind) = payload.requires.and_then(|r| r.connector) else {
+            continue;
+        };
+        // Which controller to search: an explicit `controller:` attribute,
+        // or the only controller when the machine has exactly one.
+        let ctrl_name = match comp.attributes.get("controller").and_then(|v| v.as_str()) {
+            Some(c) => c.to_string(),
+            None if doc.controllers.len() == 1 => doc.controllers.keys().next().unwrap().clone(),
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1203",
+                        format!(
+                            "component '{cname}' needs a {required_kind} but the machine has {} controllers — add 'controller: <name>' to disambiguate",
+                            doc.controllers.len()
+                        ),
+                    )
+                    .at(format!("components.{cname}")),
+                );
+                continue;
+            }
+        };
+        let Some(board) = boards.get(&ctrl_name) else {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E1204",
+                    format!("component '{cname}': unknown controller '{ctrl_name}'"),
+                )
+                .at(format!("components.{cname}.controller")),
+            );
+            continue;
+        };
+        let candidates: Vec<String> = board
+            .connectors
+            .iter()
+            .filter(|(_, c)| c.kind == required_kind)
+            .map(|(id, _)| format!("{ctrl_name}.{id}"))
+            .collect();
+        let chosen = candidates.iter().find(|t| !claims.contains_key(*t));
+        let Some(target) = chosen else {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E1205",
+                    format!(
+                        "component '{cname}': no free {required_kind} connector on '{ctrl_name}' (considered: {})",
+                        if candidates.is_empty() { "none of that kind".to_string() } else { candidates.join(", ") }
+                    ),
+                )
+                .at(format!("components.{cname}")),
+            );
+            continue;
+        };
+        claims.insert(target.clone(), cname.clone());
+        resolved
+            .assignments
+            .entry(cname.clone())
+            .or_default()
+            .push(Assignment {
+                requested_by: cname.clone(),
+                via: format!("requires.connector ({})", dev.reference),
+                resource: ResourceId(target.clone()),
+                connector_kind: required_kind.clone(),
+                candidates_considered: candidates.clone(),
+                constraints_applied: vec![
+                    format!("connector kind == {required_kind}"),
+                    "first free candidate in stable connector order".to_string(),
+                    "exclusive ownership".to_string(),
+                ],
+            });
+    }
+
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return fail(std::mem::take(diagnostics), phases_run.clone());
+    }
+
+    // --- Phase 8: electrical validation (first check) -------------------
+    // A component declaring its draw (`current: "3 A"`) must fit the
+    // connector's `max_current`. Voltage-domain and timing checks are
+    // later slices of this phase.
+    phases_run.push(Phase::ElectricalValidation);
+    for (cname, comp) in &doc.components {
+        let Some(draw_raw) = comp.attributes.get("current").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let draw = match Quantity::parse_as(draw_raw, Dimension::Current) {
+            Ok(q) => q,
+            Err(e) => {
+                diagnostics.push(
+                    Diagnostic::error("E1301", format!("component '{cname}' current: {e}"))
+                        .at(format!("components.{cname}.current")),
+                );
+                continue;
+            }
+        };
+        for assignment in resolved.assignments.get(cname).into_iter().flatten() {
+            let Some((ctrl, port)) = assignment.resource.0.split_once('.') else {
+                continue;
+            };
+            let Some(limit_raw) = boards
+                .get(ctrl)
+                .and_then(|b| b.connectors.get(port))
+                .and_then(|c| c.max_current.clone())
+            else {
+                continue;
+            };
+            // board payloads validated this quantity at load time
+            let Ok(limit) = Quantity::parse_as(&limit_raw, Dimension::Current) else {
+                continue;
+            };
+            if draw.value > limit.value {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1300",
+                        format!(
+                            "component '{cname}' draws {draw_raw} but '{}' allows at most {limit_raw}",
+                            assignment.resource.0
+                        ),
+                    )
+                    .at(format!("components.{cname}.current")),
+                );
+            }
+        }
+    }
+
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return fail(std::mem::take(diagnostics), phases_run.clone());
     }
@@ -394,7 +545,7 @@ mod tests {
     fn the_fixture_machine_resolves_with_expected_assignments() {
         let o = resolve_source(&fixture(), &registry());
         assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
-        assert_eq!(o.phases_run.len(), 7, "all seven phases ran");
+        assert_eq!(o.phases_run.len(), 8, "all eight phases ran");
         let g = o.resolved.unwrap();
         let x = &g.assignments["x_driver"][0];
         assert_eq!(x.resource.0, "mainboard.motor0");
@@ -476,5 +627,65 @@ mod tests {
         let bad = fixture().replace("type: usb", "type: ethernet");
         let o = resolve_source(&bad, &registry());
         assert!(o.diagnostics.iter().any(|d| d.code == "E1120"));
+    }
+
+    /// Search-based allocation: a tmc2209 with no explicit claim gets the
+    /// first FREE stepper socket (motor0 is claimed by x_driver), and its
+    /// provenance lists every kind-compatible candidate.
+    #[test]
+    fn an_unclaimed_device_is_search_allocated_with_full_candidates() {
+        let with_z = fixture().replace(
+            "kinematics:",
+            "  z_driver:\n    type: tmc2209\n\nkinematics:",
+        );
+        let o = resolve_source(&with_z, &registry());
+        assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
+        let g = o.resolved.unwrap();
+        let z = &g.assignments["z_driver"][0];
+        assert_eq!(
+            z.resource.0, "mainboard.motor1",
+            "motor0 is already claimed"
+        );
+        assert_eq!(
+            z.candidates_considered,
+            vec![
+                "mainboard.motor0".to_string(),
+                "mainboard.motor1".to_string()
+            ],
+            "all kind-compatible connectors are recorded"
+        );
+        assert!(z.via.contains("devices/tmc2209"));
+    }
+
+    #[test]
+    fn exhausting_the_sockets_is_a_typed_error() {
+        let with_two = fixture().replace(
+            "kinematics:",
+            "  z_driver:\n    type: tmc2209\n\n  e_driver:\n    type: tmc2209\n\nkinematics:",
+        );
+        let o = resolve_source(&with_two, &registry());
+        assert!(!o.is_ok());
+        let d = o.diagnostics.iter().find(|d| d.code == "E1205").unwrap();
+        assert!(d.message.contains("no free stepper_driver_socket"));
+    }
+
+    /// The fixture heater declares `current: 2 A` against a 5 A connector
+    /// and passes; raising the draw beyond the connector limit fails.
+    #[test]
+    fn electrical_validation_compares_draw_against_connector_limit() {
+        let over = fixture().replace("current: 2 A", "current: 6 A");
+        assert_ne!(over, fixture());
+        let o = resolve_source(&over, &registry());
+        assert!(!o.is_ok());
+        let d = o.diagnostics.iter().find(|d| d.code == "E1300").unwrap();
+        assert!(d.message.contains("6 A") && d.message.contains("5 A"));
+        assert_eq!(*o.phases_run.last().unwrap(), Phase::ElectricalValidation);
+    }
+
+    #[test]
+    fn a_malformed_current_declaration_is_its_own_error() {
+        let bad = fixture().replace("current: 2 A", "current: quite a lot");
+        let o = resolve_source(&bad, &registry());
+        assert!(o.diagnostics.iter().any(|d| d.code == "E1301"));
     }
 }

@@ -32,10 +32,25 @@ tests exist and pass, not that a type was declared.
   kind-compatibility (a v0 attribute→kind table, documented as a stopgap for device-
   package requirements §9), §11.5-style explainable assignments, and E1200 conflicts
   that suggest free same-kind connectors. Determinism pinned by test (byte-equal JSON
-  across runs). *Remaining for [x]:* search-based allocation from roles/requirements,
-  real `SourceSpan`s, transitive dependency resolution, graph expansion.
-- [ ] **6. Electrical, timing, and safety validation**
-- [ ] **7. `machine-lock` canonical serialization and hashing**
+  across runs). Slice 2 added **search-based allocation**: device packages carry
+  `requires.connector` (§9 subset), unclaimed components get the first free
+  kind-compatible connector in stable order (§11.4), all candidates recorded (§11.5),
+  with E1203 ambiguity (multi-controller without `controller:`) and E1205 exhaustion
+  errors. *Remaining for [x]:* real `SourceSpan`s, transitive dependency resolution,
+  graph expansion, bus/signal requirement matching.
+- [~] **6. Electrical, timing, and safety validation** — first electrical check landed
+  as resolver phase 8: a component's declared `current` draw is quantity-parsed and
+  compared against the assigned connector's `max_current` (E1300; malformed draw
+  E1301). *Remaining:* voltage-domain compatibility, timing budgets, safety-profile
+  validation — safety profiles have no package payload yet.
+- [~] **7. `machine-lock` canonical serialization and hashing** — `forge-machine-lock`
+  produces a deterministic lockfile (canonical JSON bytes + `sha256:` lock hash; YAML
+  on disk) binding the machine-source hash, exact package versions with manifest
+  hashes, resolver version, and per-controller resolved resources. Golden at
+  `examples/minimal-cartesian/machine.lock`, drift-gated in CI. *Remaining for [x]:*
+  registry source identity, full package content digests (§6.6), firmware targets,
+  protocol versions, feature flags, safety-profile versions — each gated on machinery
+  that does not exist yet (stated in the crate docs).
 - [ ] **8. Klipper config and build-parameter export** *(license/provenance record
   required first — §23.5)*
 - [ ] **9. Simulated controller and end-to-end golden tests**

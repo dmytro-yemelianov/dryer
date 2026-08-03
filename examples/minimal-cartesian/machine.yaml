@@ -29,6 +29,7 @@ components:
     type: heater
     output: mainboard.heater0
     sensor: hotend_sensor
+    current: 2 A
 
   hotend_sensor:
     type: thermistor

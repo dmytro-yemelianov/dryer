@@ -1,0 +1,15 @@
+lock_version: 1
+machine_hash: sha256:89fe6c763feb05e4f60249919face4fa160e4e7161f5fcd366dcfcf8ede53212
+resolver_version: 0.1.0
+packages:
+- id: boards/example-mainboard@1.0.0
+  manifest_hash: sha256:b970a4fe451aabb8f119eeeb65557d6eec4b4c8ab4b194bd17554cb1c9f3d54d
+- id: devices/tmc2209@2.1.0
+  manifest_hash: sha256:78572266b347723d6881ad82308f3e524a3b9fc6ca37e131993821b7bf380b7c
+controllers:
+  mainboard:
+    board: boards/example-mainboard
+    resolved_resources:
+      hotend_heater/output: heater0
+      hotend_sensor/input: thermistor0
+      x_driver/connected_to: motor0

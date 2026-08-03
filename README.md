@@ -33,7 +33,8 @@ spec, Draft v0.1). Key principles:
 | `crates/machine-parser` | YAML → validated Machine Graph with structured, located diagnostics |
 | `crates/resource-model` | Generic hardware resource/constraint/preference model used by the future resolver |
 | `crates/package-model` | Package identity (`namespace/name@version`), manifests, board payloads, dependency ranges, local directory registry |
-| `crates/machine-resolver` | Deterministic resolution: 7 explicit phases, explicit-claim connector allocation, explainable assignments, conflict diagnostics with suggestions |
+| `crates/machine-resolver` | Deterministic resolution: 8 explicit phases, explicit-claim + search-based connector allocation, electrical checks, explainable assignments, conflict diagnostics with suggestions |
+| `crates/machine-lock` | `machine.lock`: canonical, hashed capture of a resolution (drift-gated golden in `examples/`) |
 
 ```bash
 cargo test --workspace

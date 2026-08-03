@@ -3,3 +3,14 @@ package:
   name: tmc2209
   version: 2.1.0
   kind: device
+
+device:
+  class: stepper_driver
+  model: tmc2209
+
+requires:
+  connector: stepper_driver_socket
+
+capabilities:
+  - stepper.drive
+  - stepper.uart_config
