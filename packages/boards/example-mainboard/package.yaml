@@ -4,6 +4,8 @@ package:
   version: 1.0.0
   kind: board
 
+chip: chips/generic-mcu
+
 hardware:
   manufacturer: Example
   model: Mainboard
@@ -26,6 +28,24 @@ connectors:
       dir: PD4
       enable: PD3
       uart: PD1
+    voltage_domain: logic_3v3
+
+  motor2:
+    kind: stepper_driver_socket
+    pins:
+      step: PE13
+      dir: PE14
+      enable: PE15
+      uart: PE8
+    voltage_domain: logic_3v3
+
+  motor3:
+    kind: stepper_driver_socket
+    pins:
+      step: PD7
+      dir: PD8
+      enable: PD9
+      uart: PD10
     voltage_domain: logic_3v3
 
   heater0:

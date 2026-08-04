@@ -234,8 +234,9 @@ fn validate(doc: &MachineDoc, source: &str, out: &mut Vec<Diagnostic>) {
 /// names still require *some* valid unit, but their dimension is free.
 fn expected_limit_dimension(name: &str) -> Option<Dimension> {
     match name {
-        "max_velocity" => Some(Dimension::Velocity),
+        "max_velocity" | "max_z_velocity" => Some(Dimension::Velocity),
         "max_acceleration" => Some(Dimension::Acceleration),
+        "max_step_rate" => Some(Dimension::Frequency),
         _ => None,
     }
 }

@@ -24,9 +24,18 @@
 //! absolute. The closure is published on `ResolvedGraph::packages` and is
 //! what the lockfile pins.
 //!
-//! Deliberately NOT here yet: timing validation, firmware partitioning,
-//! and graph expansion (templates). Each is a later slice; lockfile
-//! generation lives in `dryer-machine-lock`.
+//! Slice 6 implemented **graph expansion** (machine-class templates,
+//! §5.5); slice 7 added **voltage-domain validation**; slice 8 implemented
+//! **peripheral mapping** (docs/peripheral-mapping.md): board pins join the
+//! chip's pin-function table into per-assignment `pin_capabilities`, board
+//! wiring is checked against the chip (E1312), and a declared
+//! `max_step_rate` makes step pins require exclusive timer channels —
+//! E1310 for gpio-only pins, E1314 for channel conflicts, with search
+//! allocation steering around both.
+//!
+//! Deliberately NOT here yet: bus/signal requirement matching, firmware
+//! partitioning, range spans. Lockfile generation lives in
+//! `dryer-machine-lock`.
 
 use dryer_machine_schema::{Diagnostic, Dimension, MachineDoc, Quantity, Severity};
 use dryer_package_model::{board::BoardPackageFile, LocalRegistry, PackageRef};
@@ -68,6 +77,12 @@ pub struct Assignment {
     pub candidates_considered: Vec<String>,
     /// Human-readable constraints applied to accept the claim.
     pub constraints_applied: Vec<String>,
+    /// Signal → chip capability tokens for the connector's pins, derived by
+    /// joining board wiring with the chip's pin-function table
+    /// (docs/peripheral-mapping.md). Empty when the board names no chip or
+    /// the chip carries no table.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pin_capabilities: BTreeMap<String, Vec<String>>,
 }
 
 /// The resolved graph, v0.1: deterministic assignments keyed by component,
@@ -96,6 +111,9 @@ impl ResolvedGraph {
                 a.candidates_considered.join(", "),
                 a.constraints_applied.join("; "),
             ));
+            for (signal, funcs) in &a.pin_capabilities {
+                s.push_str(&format!("  {signal}: {}\n", funcs.join(" | ")));
+            }
         }
         Some(s)
     }
@@ -332,6 +350,7 @@ fn resolve_doc(
     // --- Phase 4: package loading (board payloads per controller) ------
     phases_run.push(Phase::PackageLoading);
     let mut boards: BTreeMap<String, BoardPackageFile> = BTreeMap::new();
+    let mut chips: BTreeMap<String, dryer_package_model::chip::ChipPackageFile> = BTreeMap::new();
     for (cname, ctrl) in &doc.controllers {
         let Some((ns, name)) = ctrl.board.split_once('/') else {
             diagnostics.push(
@@ -372,6 +391,53 @@ fn resolve_doc(
                             )
                             .at(format!("controllers.{cname}.transport")),
                         );
+                    }
+                    // Peripheral mapping (docs/peripheral-mapping.md): join
+                    // the board's pins to the chip's pin-function table.
+                    if let Some(chip_ref) = payload.chip.clone() {
+                        let chip_pkg = select(&chip_ref);
+                        if let Some(chip_pkg) = chip_pkg {
+                            if !chosen.contains_key(&chip_ref) {
+                                diagnostics.push(Diagnostic::warning(
+                                    "E1311",
+                                    format!(
+                                        "board '{}' chip '{chip_ref}' is not in the dependency closure; using {} (highest available)",
+                                        ctrl.board, chip_pkg.reference.version
+                                    ),
+                                ));
+                            }
+                            match chip_pkg.chip_payload() {
+                                Ok(chip) => {
+                                    // A chip without a pin table disables the
+                                    // wiring check — no data, no verdict.
+                                    if !chip.pin_functions.is_empty() {
+                                        for (cid, conn) in &payload.connectors {
+                                            for pin in conn.pins.values().chain(conn.pin.iter()) {
+                                                if !chip.pin_functions.contains_key(pin) {
+                                                    diagnostics.push(Diagnostic::error(
+                                                        "E1312",
+                                                        format!(
+                                                            "board '{}' connector '{cid}' wires pin {pin}, which chip '{chip_ref}' does not declare",
+                                                            ctrl.board
+                                                        ),
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    chips.insert(cname.clone(), chip);
+                                }
+                                Err(errs) => diagnostics.extend(errs),
+                            }
+                        } else {
+                            diagnostics.push(Diagnostic::error(
+                                "E1313",
+                                format!(
+                                    "board '{}' references chip '{chip_ref}', which is not in the registry",
+                                    ctrl.board
+                                ),
+                            ));
+                        }
                     }
                     boards.insert(cname.clone(), payload);
                 }
@@ -478,6 +544,19 @@ fn resolve_doc(
     };
     // connector -> first claimant, for exclusivity conflicts
     let mut claims: BTreeMap<String, String> = BTreeMap::new();
+    // Step-timing (docs/peripheral-mapping.md): when the machine declares a
+    // step-rate budget, every stepper socket's step pin must sit on a timer
+    // channel, and channels are exclusive. Reservations interleave with
+    // allocation (explicit pass first, then search) so the search allocator
+    // can steer around reserved channels — which is why this check lives
+    // here rather than in the electrical phase.
+    let max_step_rate = doc
+        .kinematics
+        .limits
+        .get("max_step_rate")
+        .and_then(|v| Quantity::parse_as(v, Dimension::Frequency).ok());
+    // "ctrl.timN.chM" -> (claiming component, step pin)
+    let mut timer_claims: BTreeMap<String, (String, String)> = BTreeMap::new();
 
     for (cname, comp) in &doc.components {
         for (attr, val) in &comp.attributes {
@@ -569,6 +648,51 @@ fn resolve_doc(
                 continue;
             }
 
+            let caps = derive_pin_capabilities(chips.get(ctrl), connector);
+            let mut constraints = vec![
+                format!("explicit claim of '{target}'"),
+                format!("connector kind == {expected_kind}"),
+                "exclusive ownership".to_string(),
+            ];
+            if max_step_rate.is_some() && expected_kind == "stepper_driver_socket" {
+                if let Some(step_funcs) = caps.get("step") {
+                    let step_pin = connector.pins.get("step").cloned().unwrap_or_default();
+                    match step_funcs.iter().find(|f| f.starts_with("tim")) {
+                        None => {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "E1310",
+                                    format!(
+                                        "component '{cname}': max_step_rate is declared, but '{target}' step pin {step_pin} has no timer function (capabilities: {})",
+                                        step_funcs.join(", ")
+                                    ),
+                                )
+                                .at(format!("components.{cname}.{attr}")),
+                            );
+                            continue;
+                        }
+                        Some(tok) => {
+                            let key = format!("{ctrl}.{tok}");
+                            if let Some((other, opin)) = timer_claims.get(&key) {
+                                diagnostics.push(
+                                    Diagnostic::error(
+                                        "E1314",
+                                        format!(
+                                            "timer conflict: '{cname}' (pin {step_pin}) and '{other}' (pin {opin}) both need {tok} on '{ctrl}'"
+                                        ),
+                                    )
+                                    .at(format!("components.{cname}.{attr}")),
+                                );
+                                continue;
+                            }
+                            timer_claims.insert(key, (cname.clone(), step_pin));
+                            constraints.push(format!(
+                                "step pin on free timer channel {tok} (max_step_rate)"
+                            ));
+                        }
+                    }
+                }
+            }
             claims.insert(target.to_string(), cname.clone());
             resolved
                 .assignments
@@ -580,11 +704,8 @@ fn resolve_doc(
                     resource: ResourceId(target.to_string()),
                     connector_kind: connector.kind.clone(),
                     candidates_considered: vec![target.to_string()],
-                    constraints_applied: vec![
-                        format!("explicit claim of '{target}'"),
-                        format!("connector kind == {expected_kind}"),
-                        "exclusive ownership".to_string(),
-                    ],
+                    constraints_applied: constraints,
+                    pin_capabilities: caps,
                 });
         }
     }
@@ -663,9 +784,31 @@ fn resolve_doc(
                     .and_then(|c| c.voltage_domain.as_deref())
                     .is_some_and(|d| required_domains.iter().any(|r| r == d))
         };
+        // Step-timing as a hard search filter: with a declared rate, only
+        // sockets whose step pin carries an UNRESERVED timer channel are
+        // eligible. No chip table ⇒ no filtering (no data, no check).
+        let timing_ok = |target: &str| -> bool {
+            if max_step_rate.is_none() || required_kind != "stepper_driver_socket" {
+                return true;
+            }
+            let Some((c, port)) = target.split_once('.') else {
+                return true;
+            };
+            let Some(connector) = board.connectors.get(port) else {
+                return true;
+            };
+            let caps = derive_pin_capabilities(chips.get(c), connector);
+            match caps.get("step") {
+                None => true,
+                Some(funcs) => funcs
+                    .iter()
+                    .find(|f| f.starts_with("tim"))
+                    .is_some_and(|tok| !timer_claims.contains_key(&format!("{c}.{tok}"))),
+            }
+        };
         let chosen = candidates
             .iter()
-            .find(|t| !claims.contains_key(*t) && domain_ok(t));
+            .find(|t| !claims.contains_key(*t) && domain_ok(t) && timing_ok(t));
         let Some(target) = chosen else {
             diagnostics.push(
                 Diagnostic::error(
@@ -680,6 +823,43 @@ fn resolve_doc(
             continue;
         };
         claims.insert(target.clone(), cname.clone());
+        let target_caps = target
+            .split_once('.')
+            .and_then(|(c, port)| {
+                board
+                    .connectors
+                    .get(port)
+                    .map(|conn| derive_pin_capabilities(chips.get(c), conn))
+            })
+            .unwrap_or_default();
+        let mut constraints = vec![
+            format!("connector kind == {required_kind}"),
+            "first free candidate in stable connector order".to_string(),
+            "exclusive ownership".to_string(),
+        ];
+        if !required_domains.is_empty() {
+            constraints.push(format!(
+                "voltage domain in [{}]",
+                required_domains.join(", ")
+            ));
+        }
+        if max_step_rate.is_some() && required_kind == "stepper_driver_socket" {
+            if let Some(tok) = target_caps
+                .get("step")
+                .and_then(|fs| fs.iter().find(|f| f.starts_with("tim")))
+            {
+                let (c, port) = target.split_once('.').expect("controller.port shape");
+                let step_pin = board
+                    .connectors
+                    .get(port)
+                    .and_then(|conn| conn.pins.get("step").cloned())
+                    .unwrap_or_default();
+                timer_claims.insert(format!("{c}.{tok}"), (cname.clone(), step_pin));
+                constraints.push(format!(
+                    "step pin on free timer channel {tok} (max_step_rate)"
+                ));
+            }
+        }
         resolved
             .assignments
             .entry(cname.clone())
@@ -690,20 +870,8 @@ fn resolve_doc(
                 resource: ResourceId(target.clone()),
                 connector_kind: required_kind.clone(),
                 candidates_considered: candidates.clone(),
-                constraints_applied: {
-                    let mut c = vec![
-                        format!("connector kind == {required_kind}"),
-                        "first free candidate in stable connector order".to_string(),
-                        "exclusive ownership".to_string(),
-                    ];
-                    if !required_domains.is_empty() {
-                        c.push(format!(
-                            "voltage domain in [{}]",
-                            required_domains.join(", ")
-                        ));
-                    }
-                    c
-                },
+                constraints_applied: constraints,
+                pin_capabilities: target_caps,
             });
     }
 
@@ -901,6 +1069,31 @@ fn resolve_doc(
     }
 }
 
+/// Join a connector's pins to the chip's pin-function table
+/// (docs/peripheral-mapping.md). No chip / no table ⇒ empty: absence of
+/// data disables capability checks, it never fakes them.
+fn derive_pin_capabilities(
+    chip: Option<&dryer_package_model::chip::ChipPackageFile>,
+    connector: &dryer_package_model::board::Connector,
+) -> BTreeMap<String, Vec<String>> {
+    let mut out = BTreeMap::new();
+    let Some(chip) = chip else { return out };
+    if chip.pin_functions.is_empty() {
+        return out;
+    }
+    for (signal, pin) in &connector.pins {
+        if let Some(f) = chip.pin_functions.get(pin) {
+            out.insert(signal.clone(), f.clone());
+        }
+    }
+    if let Some(pin) = &connector.pin {
+        if let Some(f) = chip.pin_functions.get(pin) {
+            out.insert("pin".to_string(), f.clone());
+        }
+    }
+    out
+}
+
 /// v0.1 claim-compatibility table: which connector kind each claiming
 /// attribute requires. This is a deliberate stopgap — once device packages
 /// carry requirement payloads (§9), compatibility comes from the claimed
@@ -1040,7 +1233,9 @@ mod tests {
             y.candidates_considered,
             vec![
                 "mainboard.motor0".to_string(),
-                "mainboard.motor1".to_string()
+                "mainboard.motor1".to_string(),
+                "mainboard.motor2".to_string(),
+                "mainboard.motor3".to_string()
             ],
             "all kind-compatible connectors are recorded"
         );
@@ -1049,11 +1244,12 @@ mod tests {
 
     #[test]
     fn exhausting_the_sockets_is_a_typed_error() {
-        let with_two = fixture().replace(
+        // four sockets: x explicit + template y + z + e fill them; w exhausts
+        let with_three = fixture().replace(
             "kinematics:",
-            "  z_driver:\n    type: tmc2209\n\n  e_driver:\n    type: tmc2209\n\nkinematics:",
+            "  z_driver:\n    type: tmc2209\n\n  e_driver:\n    type: tmc2209\n\n  w_driver:\n    type: tmc2209\n\nkinematics:",
         );
-        let o = resolve_source(&with_two, &registry());
+        let o = resolve_source(&with_three, &registry());
         assert!(!o.is_ok());
         let d = o.diagnostics.iter().find(|d| d.code == "E1205").unwrap();
         assert!(d.message.contains("no free stepper_driver_socket"));
@@ -1160,6 +1356,69 @@ mod tests {
         assert!(d.message.contains("cartesian") && d.message.contains("corexy"));
     }
 
+    /// Pin capabilities ride every assignment: the explicit x_driver claim
+    /// carries the chip functions behind motor0's pins.
+    #[test]
+    fn assignments_carry_derived_pin_capabilities() {
+        let o = resolve_source(&fixture(), &registry());
+        assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
+        let g = o.resolved.unwrap();
+        let x = &g.assignments["x_driver"][0];
+        assert_eq!(x.pin_capabilities["step"], vec!["tim1.ch2", "gpio"]);
+        assert_eq!(x.pin_capabilities["dir"], vec!["gpio"]);
+        assert!(g.explain("x_driver").unwrap().contains("tim1.ch2"));
+    }
+
+    fn with_rate() -> String {
+        fixture().replace("  limits:", "  limits:\n    max_step_rate: 100 kHz")
+    }
+
+    /// With a step-rate budget, search allocation steers around sockets
+    /// whose step pin lacks a timer and reserves the chosen channel.
+    #[test]
+    fn a_step_rate_budget_steers_search_to_timer_backed_sockets() {
+        let o = resolve_source(&with_rate(), &registry());
+        assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
+        let g = o.resolved.unwrap();
+        let y = &g.assignments["y_driver"][0];
+        assert_eq!(
+            y.resource.0, "mainboard.motor1",
+            "motor1's PD5 carries tim3.ch3; motor2 shares x's tim1.ch2"
+        );
+        assert!(y.constraints_applied.iter().any(|c| c.contains("tim3.ch3")));
+    }
+
+    /// An explicit claim onto a gpio-only step pin violates the budget.
+    #[test]
+    fn a_declared_step_rate_rejects_gpio_only_step_pins() {
+        let bad = with_rate().replace(
+            "kinematics:",
+            "  z_driver:\n    type: tmc2209\n    connected_to: mainboard.motor3\n\nkinematics:",
+        );
+        let o = resolve_source(&bad, &registry());
+        assert!(!o.is_ok());
+        let d = o.diagnostics.iter().find(|d| d.code == "E1310").unwrap();
+        assert!(d.message.contains("PD7"), "{}", d.message);
+    }
+
+    /// Two sockets multiplexed onto one timer channel cannot both step:
+    /// the spec's own E1204-style conflict, now with real operands.
+    #[test]
+    fn a_shared_timer_channel_is_a_conflict_naming_both_components() {
+        let bad = with_rate().replace(
+            "kinematics:",
+            "  z_driver:\n    type: tmc2209\n    connected_to: mainboard.motor2\n\nkinematics:",
+        );
+        let o = resolve_source(&bad, &registry());
+        assert!(!o.is_ok());
+        let d = o.diagnostics.iter().find(|d| d.code == "E1314").unwrap();
+        assert!(
+            d.message.contains("x_driver") && d.message.contains("tim1.ch2"),
+            "{}",
+            d.message
+        );
+    }
+
     /// Voltage domains are checked on explicit claims: legacy-probe
     /// requires logic_5v, and thermistor0 declares no domain — silence
     /// never satisfies an electrical requirement.
@@ -1207,8 +1466,8 @@ mod tests {
         assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
         let pkgs = o.resolved.unwrap().packages;
         assert!(
-            pkgs.contains(&"chips/generic-mcu@1.2.0".to_string()),
-            "transitive dep at max satisfying (not 1.0.0): {pkgs:?}"
+            pkgs.contains(&"chips/generic-mcu@1.3.0".to_string()),
+            "transitive dep at max satisfying (1.3.0 supersedes 1.2.0): {pkgs:?}"
         );
         assert!(pkgs.contains(&"boards/example-mainboard@1.0.0".to_string()));
         assert!(pkgs.contains(&"safety-profiles/desktop-fdm@1.0.0".to_string()));

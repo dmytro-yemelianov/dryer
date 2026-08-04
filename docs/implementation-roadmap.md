@@ -65,10 +65,15 @@ tests exist and pass, not that a type was declared.
   declare acceptable domains (§10.1 membership); explicit-claim mismatches are E1302
   — a connector declaring NO domain never satisfies a non-empty requirement — and
   search allocation treats the domain as a hard candidate filter, recorded in the
-  assignment provenance. *Remaining:* timing budgets — deliberately absent until
-  boards map connectors to timer/DMA peripherals, so there is data to validate
-  against rather than an assumption; and compiling safe states into controller
-  artifacts (firmware phases).
+  assignment provenance. Slice 8 implemented **peripheral mapping**
+  (docs/peripheral-mapping.md): chip packages carry pin-function tables (E065x
+  validation), board wiring is checked against the chip (E1312), every assignment
+  carries derived `pin_capabilities`, and a declared `max_step_rate` enforces
+  exclusive timer channels on step pins (E1310 gpio-only, E1314 conflicts) —
+  interleaved with allocation so search steers around reserved channels.
+  *Remaining:* bus/signal requirement matching (§9 `requires.bus` — the frequency
+  data now exists on chip buses), DMA/latency budgets, and compiling safe states
+  into controller artifacts (firmware phases).
 - [~] **7. `machine-lock` canonical serialization and hashing** — `dryer-machine-lock`
   produces a deterministic lockfile (canonical JSON bytes + `sha256:` lock hash; YAML
   on disk) binding the machine-source hash, exact package versions with manifest
@@ -103,10 +108,8 @@ tests exist and pass, not that a type was declared.
 - **Toolpath verification slot**: the job pipeline should name a program auditor
   (e.g. [dry](https://github.com/dmytro-yemelianov/dry)) as its pre-flight gate —
   a §23.6 to be written.
-- **Timing/bus-signal data model**: designed in
-  [`peripheral-mapping.md`](peripheral-mapping.md) (chip pin-function tables →
-  derived connector capabilities → E1310 step-timing, bus matching, timer
-  conflicts); implementation not started.
+- **Timing/bus-signal data model**: [`peripheral-mapping.md`](peripheral-mapping.md)
+  phases 1–3 are implemented for step timing; bus matching remains.
 - **Simulated controller** (§29 step 9): designed in [`simulator.md`](simulator.md)
   (virtual clock, typed commands before wire frames, safety-envelope enforcement
   from the resolved profile, drift-gated trace goldens); implementation not started.

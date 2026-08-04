@@ -1,6 +1,6 @@
 # Peripheral mapping — design
 
-Status: Proposed · Unblocks: timing budgets and bus/signal requirement matching
+Status: Implemented for step timing (bus matching pending) · Unblocked: timing budgets and bus/signal requirement matching
 (the two items the roadmap defers "until there is data to validate against").
 
 ## Problem
