@@ -8,6 +8,7 @@
 
 pub mod board;
 pub mod device;
+pub mod machine;
 pub mod safety;
 
 use forge_machine_schema::{valid_identifier, Diagnostic};

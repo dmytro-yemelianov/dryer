@@ -383,10 +383,90 @@ fn resolve_doc(
         return fail(std::mem::take(diagnostics), phases_run.clone());
     }
 
-    // --- Phase 5: graph expansion (recorded no-op in v0.1) -------------
-    // No package templates exist yet (§5.5 'expanded graph'); recording the
-    // phase keeps `phases_run` an honest trace once expansion arrives.
+    // --- Phase 5: graph expansion (§5.5) --------------------------------
+    // Every machine-kind package in the closure contributes its template,
+    // in sorted package order. The SOURCE graph is never mutated: expansion
+    // produces `expanded`, and all later phases read that. Source wins —
+    // a template never overrides a user declaration; every contribution
+    // and shadowing is surfaced as an Info diagnostic so the expanded
+    // graph stays explainable.
     phases_run.push(Phase::GraphExpansion);
+    let mut expanded = doc.clone();
+    for path in chosen.keys() {
+        let Some(pkg) = select(path) else { continue };
+        if pkg.kind != forge_package_model::PackageKind::Machine {
+            continue;
+        }
+        let template = match pkg.machine_payload() {
+            Ok(p) => match p.template {
+                Some(t) => t,
+                None => continue,
+            },
+            Err(errs) => {
+                diagnostics.extend(errs);
+                continue;
+            }
+        };
+        for (cid, comp) in template.components {
+            if !forge_machine_schema::valid_identifier(&cid) {
+                diagnostics.push(Diagnostic::error(
+                    "E1131",
+                    format!("template component '{cid}' from '{path}' is not a valid identifier"),
+                ));
+                continue;
+            }
+            match expanded.components.entry(cid.clone()) {
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    diagnostics.push(Diagnostic::info(
+                        "I1132",
+                        format!("source component '{cid}' shadows the template from '{path}'"),
+                    ));
+                }
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    diagnostics.push(Diagnostic::info(
+                        "I1133",
+                        format!("component '{cid}' expanded from '{path}'"),
+                    ));
+                    e.insert(comp);
+                }
+            }
+        }
+        if let Some(k) = template.kinematics {
+            if let Some(kind) = k.kind {
+                if kind != expanded.kinematics.kind {
+                    diagnostics.push(Diagnostic::warning(
+                        "E1130",
+                        format!(
+                            "machine class '{path}' assumes {kind} kinematics but the source declares {}",
+                            expanded.kinematics.kind
+                        ),
+                    ));
+                }
+            }
+            for (limit, value) in k.limits {
+                if let std::collections::btree_map::Entry::Vacant(e) =
+                    expanded.kinematics.limits.entry(limit.clone())
+                {
+                    if Quantity::parse(&value).is_err() {
+                        diagnostics.push(Diagnostic::error(
+                            "E1134",
+                            format!("template limit '{limit}' from '{path}': '{value}' is not a valid quantity"),
+                        ));
+                    } else {
+                        diagnostics.push(Diagnostic::info(
+                            "I1133",
+                            format!("kinematics limit '{limit}' defaulted from '{path}'"),
+                        ));
+                        e.insert(value);
+                    }
+                }
+            }
+        }
+    }
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return fail(std::mem::take(diagnostics), phases_run.clone());
+    }
+    let doc = &expanded;
 
     // --- Phase 6+7: capability matching & explicit-claim allocation ----
     phases_run.push(Phase::CapabilityMatching);
@@ -405,11 +485,29 @@ fn resolve_doc(
             let Some(expected_kind) = claim_kind(attr) else {
                 continue;
             };
-            // parser already guaranteed 'controller.port' shape + controller exists
+            // The parser guarantees shape and controller existence for
+            // SOURCE components; template-expanded components bypass it,
+            // so both are re-checked here rather than silently skipped.
             let Some((ctrl, port)) = target.split_once('.') else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1206",
+                        format!(
+                            "component '{cname}': '{target}' must name a controller port as 'controller.port'"
+                        ),
+                    )
+                    .at(format!("components.{cname}.{attr}")),
+                );
                 continue;
             };
             let Some(board) = boards.get(ctrl) else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1206",
+                        format!("component '{cname}': unknown controller '{ctrl}' in '{target}'"),
+                    )
+                    .at(format!("components.{cname}.{attr}")),
+                );
                 continue;
             };
 
@@ -856,27 +954,26 @@ mod tests {
     /// provenance lists every kind-compatible candidate.
     #[test]
     fn an_unclaimed_device_is_search_allocated_with_full_candidates() {
-        let with_z = fixture().replace(
-            "kinematics:",
-            "  z_driver:\n    type: tmc2209\n\nkinematics:",
-        );
-        let o = resolve_source(&with_z, &registry());
+        // The template's y_driver is itself the search-allocated component:
+        // motor0 is explicitly claimed, so it lands on motor1 with every
+        // kind-compatible connector recorded.
+        let o = resolve_source(&fixture(), &registry());
         assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
         let g = o.resolved.unwrap();
-        let z = &g.assignments["z_driver"][0];
+        let y = &g.assignments["y_driver"][0];
         assert_eq!(
-            z.resource.0, "mainboard.motor1",
+            y.resource.0, "mainboard.motor1",
             "motor0 is already claimed"
         );
         assert_eq!(
-            z.candidates_considered,
+            y.candidates_considered,
             vec![
                 "mainboard.motor0".to_string(),
                 "mainboard.motor1".to_string()
             ],
             "all kind-compatible connectors are recorded"
         );
-        assert!(z.via.contains("devices/tmc2209"));
+        assert!(y.via.contains("devices/tmc2209"));
     }
 
     #[test]
@@ -934,6 +1031,62 @@ mod tests {
         assert!(!o.is_ok());
         let d = o.diagnostics.iter().find(|d| d.code == "E1501").unwrap();
         assert!(d.message.contains("laser"));
+    }
+
+    /// Graph expansion: the pinned machine class contributes `y_driver`
+    /// (search-allocated to the free socket) and a default limit, each
+    /// surfaced as an Info diagnostic; the source graph is never mutated.
+    #[test]
+    fn the_machine_template_expands_components_and_default_limits() {
+        let o = resolve_source(&fixture(), &registry());
+        assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
+        let g = o.resolved.as_ref().unwrap();
+        let y = &g.assignments["y_driver"][0];
+        assert_eq!(y.resource.0, "mainboard.motor1");
+        assert!(y.via.contains("devices/tmc2209"));
+        let infos: Vec<&str> = o
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Info)
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            infos.iter().any(|m| m.contains("y_driver")),
+            "component contribution surfaced: {infos:?}"
+        );
+        assert!(
+            infos.iter().any(|m| m.contains("max_z_velocity")),
+            "limit default surfaced: {infos:?}"
+        );
+    }
+
+    /// Source-wins: a source component with the template's name shadows it.
+    #[test]
+    fn a_source_component_shadows_the_template() {
+        let with_own_y = fixture().replace(
+            "kinematics:",
+            "  y_driver:\n    type: tmc2209\n    connected_to: mainboard.motor1\n\nkinematics:",
+        );
+        let o = resolve_source(&with_own_y, &registry());
+        assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
+        let g = o.resolved.as_ref().unwrap();
+        let y = &g.assignments["y_driver"][0];
+        assert_eq!(y.via, "connected_to", "the explicit source claim won");
+        assert!(o
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "I1132" && d.message.contains("y_driver")));
+    }
+
+    /// A kinematics-type mismatch between source and machine class is
+    /// surfaced as a warning, never silently overridden.
+    #[test]
+    fn a_kinematics_mismatch_with_the_machine_class_warns() {
+        let corexy = fixture().replace("  type: cartesian", "  type: corexy");
+        let o = resolve_source(&corexy, &registry());
+        assert!(o.is_ok(), "warning, not error: {:#?}", o.diagnostics);
+        let d = o.diagnostics.iter().find(|d| d.code == "E1130").unwrap();
+        assert!(d.message.contains("cartesian") && d.message.contains("corexy"));
     }
 
     /// The closure pulls tmc2209's chip dependency at the highest version

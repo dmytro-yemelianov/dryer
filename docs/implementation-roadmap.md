@@ -46,8 +46,13 @@ tests exist and pass, not that a type was declared.
   the highest satisfying version at a fixpoint (64-round cap, E1107); machine pins
   are absolute (range-excluded pin = E1103, empty intersection = E1104 naming every
   requirer, unpinned implicit root = E1106 warning). The closure is published on
-  `ResolvedGraph::packages`. *Remaining for [x]:* graph expansion, bus/signal
-  requirement matching, range spans + `related` diagnostics.
+  `ResolvedGraph::packages`. Slice 6 implemented **graph expansion** (§5.5):
+  machine-kind packages carry a board-agnostic `template` (components placed by
+  search allocation + kinematics-limit defaults); expansion never mutates the
+  source — source shadows template (I1132), every contribution is surfaced
+  (I1133), a kinematics-type mismatch warns (E1130), and template-injected claim
+  errors are hard (E1131/E1134/E1206). *Remaining for [x]:* bus/signal requirement
+  matching, range spans + `related` diagnostics.
 - [~] **6. Electrical, timing, and safety validation** — first electrical check landed
   as resolver phase 8: a component's declared `current` draw is quantity-parsed and
   compared against the assigned connector's `max_current` (E1300; malformed draw

@@ -8,6 +8,7 @@ metadata:
 packages:
   - boards/example-mainboard@1.0.0
   - devices/tmc2209@2.1.0
+  - machines/cartesian-basic@1.0.0
 
 controllers:
   mainboard:

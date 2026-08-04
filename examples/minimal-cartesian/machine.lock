@@ -1,5 +1,5 @@
 lock_version: 1
-machine_hash: sha256:89fe6c763feb05e4f60249919face4fa160e4e7161f5fcd366dcfcf8ede53212
+machine_hash: sha256:862d4c2abdaa33b66255d86cc895b2a75b3562785b5289611feaf68a97747fdb
 resolver_version: 0.1.0
 packages:
 - id: boards/example-mainboard@1.0.0
@@ -8,6 +8,8 @@ packages:
   manifest_hash: sha256:0f807b7571c5fed2dce5df5ca7b8c7a7c228d22750c15f77728270ec77747670
 - id: devices/tmc2209@2.1.0
   manifest_hash: sha256:0c24b1f24da663891e044bfed9a29b005e0d4e37acb978e1e240481bbe8b2d07
+- id: machines/cartesian-basic@1.0.0
+  manifest_hash: sha256:4217b9b074c2d2d28596a40a4768e97994b5bac6e5a759e3e935420ed0811f0e
 - id: safety-profiles/desktop-fdm@1.0.0
   manifest_hash: sha256:34abc60fdff7f998703ba423a00e5572f307b1bd642395f0e94e5ba5d28a1efd
 safety_profile:
@@ -20,3 +22,4 @@ controllers:
       hotend_heater/output: heater0
       hotend_sensor/input: thermistor0
       x_driver/connected_to: motor0
+      y_driver/requires.connector: motor1

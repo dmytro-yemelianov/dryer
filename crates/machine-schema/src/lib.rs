@@ -72,6 +72,13 @@ impl Diagnostic {
         }
     }
 
+    pub fn info(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::Info,
+            ..Self::error(code, message)
+        }
+    }
+
     pub fn at(mut self, path: impl Into<String>) -> Self {
         self.path = Some(path.into());
         self

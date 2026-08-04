@@ -1,0 +1,18 @@
+package:
+  namespace: machines
+  name: cartesian-basic
+  version: 1.0.0
+  kind: machine
+
+# Board-agnostic machine-class template (§5.5): components without
+# explicit connector claims are placed by search-based allocation;
+# kinematics limits apply only where the source manifest declares none.
+template:
+  components:
+    y_driver:
+      type: tmc2209
+
+  kinematics:
+    type: cartesian
+    limits:
+      max_z_velocity: 12 mm/s

@@ -116,9 +116,13 @@ pub fn lock(
                 continue;
             };
             if let Some(entry) = controllers.get_mut(ctrl) {
+                // Keys stay terse: a search allocation's via carries its
+                // provenance suffix ("requires.connector (devices/x@1.0)");
+                // the lock keeps the mechanism, `explain` keeps the story.
+                let via_short = a.via.split_whitespace().next().unwrap_or(&a.via);
                 entry
                     .resolved_resources
-                    .insert(format!("{component}/{}", a.via), port.to_string());
+                    .insert(format!("{component}/{via_short}"), port.to_string());
             }
         }
     }
@@ -211,10 +215,15 @@ mod tests {
         let main = &l.controllers["mainboard"];
         assert_eq!(main.resolved_resources["x_driver/connected_to"], "motor0");
         assert_eq!(main.resolved_resources["hotend_heater/output"], "heater0");
-        // the full closure: 2 explicit pins + the transitive chip
+        // the full closure: 3 explicit pins + the transitive chip
         // dependency + the implicit safety profile
-        assert_eq!(l.packages.len(), 4, "{:?}", l.packages);
+        assert_eq!(l.packages.len(), 5, "{:?}", l.packages);
         assert!(l.packages.iter().any(|p| p.id == "chips/generic-mcu@1.2.0"));
+        // the template-expanded component locks like any other
+        assert_eq!(
+            l.controllers["mainboard"].resolved_resources["y_driver/requires.connector"],
+            "motor1"
+        );
         assert!(l
             .packages
             .iter()
