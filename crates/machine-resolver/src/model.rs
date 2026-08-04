@@ -172,21 +172,6 @@ pub(super) struct RequirementConstraint {
     pub(super) source: Option<SourceSpan>,
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct ResourceClaim {
-    pub(super) component: String,
-    pub(super) path: String,
-    pub(super) source: Option<SourceSpan>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct TimerClaim {
-    pub(super) component: String,
-    pub(super) pin: String,
-    pub(super) path: String,
-    pub(super) source: Option<SourceSpan>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BusMatch {
     pub(super) instance: String,
