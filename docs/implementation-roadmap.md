@@ -100,7 +100,11 @@ tests exist and pass, not that a type was declared.
   `dryer.controller-safety/v1` artifact. The simulator consumes that artifact rather
   than rereading package policy. Golden:
   `examples/minimal-cartesian/controller-safety.golden.json`; see
-  [`firmware-build.md`](firmware-build.md).
+  [`firmware-build.md`](firmware-build.md). Slice 14 added **artifact planning**
+  (§11.2 phase 12, §21.1): chip packages declare validated memory/boot budgets,
+  target triple, toolchain, build profile, protocol/ABI versions, and feature flags;
+  the resolver combines those with exact board/chip packages and selected native
+  device drivers. Missing target metadata is blocking (E1600/E1601/E1602).
 - [~] **7. `machine-lock` canonical serialization and hashing** — `dryer-machine-lock`
   produces a deterministic lockfile (canonical JSON bytes + `sha256:` lock hash; YAML
   on disk) binding the machine-source hash, exact package versions, resolver version,
@@ -112,9 +116,10 @@ tests exist and pass, not that a type was declared.
   are rejected, v1 locks remain readable, and flash planning blocks companion-file
   drift as well as manifest drift. Slice 13 introduced lockfile v3, requiring a
   versioned compiled safety partition for every controller while v1/v2 remain
-  readable. *Remaining for [x]:* registry source identity,
-  firmware targets, protocol versions, and feature flags — each gated on machinery
-  that does not exist yet (stated in the crate docs).
+  readable. Slice 14 introduced lockfile v4, pinning the resolved target triple,
+  toolchain/build profile, memory and boot layout, protocol/ABI versions, sorted
+  features, and exact native-driver packages; v3 locks remain readable. *Remaining
+  for [x]:* registry source identity and expected reproducible output hashes.
 - [ ] **8. Klipper config and build-parameter export** *(license/provenance record
   required first — §23.5)*
 - [x] **9. Simulated controller and end-to-end golden tests** — `dryer-simulator`

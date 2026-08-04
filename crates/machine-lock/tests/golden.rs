@@ -1,4 +1,4 @@
-use dryer_machine_lock::{lock, CONTROLLER_SAFETY_SCHEMA, LOCK_VERSION};
+use dryer_machine_lock::{lock, CONTROLLER_BUILD_SCHEMA, CONTROLLER_SAFETY_SCHEMA, LOCK_VERSION};
 use dryer_package_model::LocalRegistry;
 use std::path::{Path, PathBuf};
 
@@ -41,6 +41,7 @@ fn normative_schema_tracks_the_current_lock_contract() {
         .as_array()
         .unwrap();
     assert!(controller_required.iter().any(|field| field == "safety"));
+    assert!(controller_required.iter().any(|field| field == "build"));
     assert_eq!(
         schema["$defs"]["safe_state"]["properties"]["heartbeat_timeout_us"]["minimum"],
         1
@@ -48,6 +49,22 @@ fn normative_schema_tracks_the_current_lock_contract() {
     assert_eq!(
         schema["$defs"]["safe_state"]["properties"]["state"]["enum"],
         serde_json::json!(["off", "disabled"])
+    );
+    assert_eq!(
+        schema["$defs"]["controller_build"]["properties"]["schema"]["const"],
+        CONTROLLER_BUILD_SCHEMA
+    );
+    assert_eq!(
+        schema["$defs"]["controller_build"]["properties"]["flash_bytes"]["minimum"],
+        1
+    );
+    assert_eq!(
+        schema["$defs"]["controller_build"]["properties"]["protocol_version"]["pattern"],
+        "^[a-z.]+/v[1-9][0-9]*$"
+    );
+    assert_eq!(
+        schema["$defs"]["controller_build"]["properties"]["features"]["items"]["pattern"],
+        "^[a-z][a-z0-9_-]*$"
     );
 
     let source =
@@ -60,12 +77,18 @@ fn normative_schema_tracks_the_current_lock_contract() {
     for controller in value["controllers"].as_object().unwrap().values() {
         let safety = controller
             .get("safety")
-            .expect("v3 schema requires controller safety");
+            .expect("v4 schema retains controller safety");
         assert_eq!(safety["schema"], CONTROLLER_SAFETY_SCHEMA);
         for state in safety["states"].as_array().unwrap() {
             if let Some(timeout) = state.get("heartbeat_timeout_us") {
                 assert!(timeout.as_u64().is_some_and(|timeout| timeout >= 1));
             }
         }
+        let build = controller
+            .get("build")
+            .expect("v4 schema requires controller build inputs");
+        assert_eq!(build["schema"], CONTROLLER_BUILD_SCHEMA);
+        assert!(build["flash_bytes"].as_u64().is_some_and(|bytes| bytes > 0));
+        assert!(build["ram_bytes"].as_u64().is_some_and(|bytes| bytes > 0));
     }
 }

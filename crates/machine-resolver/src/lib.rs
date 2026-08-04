@@ -49,7 +49,9 @@
 //!
 //! Slice 13 compiles validated class policy into concrete, controller-local
 //! safe-state bindings (phase 11). Lockfile generation and versioned artifact
-//! encoding remain separate downstream boundaries.
+//! encoding remain separate downstream boundaries. Slice 14 adds phase 12
+//! artifact planning: exact board/chip/native-driver inputs plus validated
+//! target, toolchain, memory, feature, protocol, and ABI metadata.
 
 use dryer_machine_parser::spans::SpanIndex;
 use dryer_machine_schema::{
@@ -75,6 +77,7 @@ pub enum Phase {
     ElectricalValidation,
     SafetyValidation,
     FirmwarePartitioning,
+    ArtifactPlanning,
 }
 
 /// One explainable assignment (§11.5): which requirement asked, what was
@@ -120,6 +123,25 @@ pub struct ControllerSafeState {
     pub sensor: Option<ResourceId>,
 }
 
+/// Deterministic controller build inputs selected during artifact planning
+/// (§11.2 phase 12, §21.1). Package references are exact and all physical
+/// capacities are compiled to integer bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ControllerBuildPlan {
+    pub board: String,
+    pub chip: String,
+    pub target_triple: String,
+    pub toolchain: String,
+    pub build_profile: String,
+    pub protocol_version: String,
+    pub abi_version: String,
+    pub flash_bytes: u64,
+    pub ram_bytes: u64,
+    pub bootloader_offset_bytes: u64,
+    pub features: Vec<String>,
+    pub native_drivers: Vec<String>,
+}
+
 /// The resolved graph, v0.1: deterministic assignments keyed by component,
 /// plus the full package closure the machine uses.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -128,6 +150,9 @@ pub struct ResolvedGraph {
     /// Controller id → deterministic local safety configuration.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub controller_safety: BTreeMap<String, Vec<ControllerSafeState>>,
+    /// Controller id → deterministic firmware target/build inputs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub controller_build_plans: BTreeMap<String, ControllerBuildPlan>,
     /// Every package the resolution selected — explicit pins, implicit
     /// roots (boards, safety profile) and transitive dependencies — as
     /// `namespace/name@version`, sorted. This is what the lockfile pins.
@@ -667,6 +692,7 @@ fn resolve_doc(
     phases_run.push(Phase::PackageLoading);
     let mut boards: BTreeMap<String, BoardPackageFile> = BTreeMap::new();
     let mut chips: BTreeMap<String, dryer_package_model::chip::ChipPackageFile> = BTreeMap::new();
+    let mut chip_refs: BTreeMap<String, String> = BTreeMap::new();
     for (cname, ctrl) in &doc.controllers {
         let Some((ns, name)) = ctrl.board.split_once('/') else {
             diagnostics.push(
@@ -741,6 +767,7 @@ fn resolve_doc(
                                             }
                                         }
                                     }
+                                    chip_refs.insert(cname.clone(), chip_pkg.reference.to_string());
                                     chips.insert(cname.clone(), chip);
                                 }
                                 Err(errs) => diagnostics.extend(errs),
@@ -1697,6 +1724,117 @@ fn resolve_doc(
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return fail(std::mem::take(diagnostics), phases_run.clone());
     }
+
+    // --- Phase 12: artifact planning ------------------------------------
+    // Select exact board/chip packages and compile target quantities before
+    // lock generation. Firmware-build consumes only this locked projection;
+    // it never guesses a target or rereads package metadata.
+    phases_run.push(Phase::ArtifactPlanning);
+    for (controller_name, controller) in &doc.controllers {
+        let Some(chip) = chips.get(controller_name) else {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E1600",
+                    format!(
+                        "controller '{controller_name}' has no resolved chip for firmware artifact planning"
+                    ),
+                )
+                .at(format!("controllers.{controller_name}.board")),
+            );
+            continue;
+        };
+        let (Some(memory), Some(boot), Some(firmware), Some(chip_reference)) = (
+            chip.memory.as_ref(),
+            chip.boot.as_ref(),
+            chip.firmware.as_ref(),
+            chip_refs.get(controller_name),
+        ) else {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E1600",
+                    format!(
+                        "controller '{controller_name}' chip package lacks memory, boot, or firmware target metadata"
+                    ),
+                )
+                .at(format!("controllers.{controller_name}.board")),
+            );
+            continue;
+        };
+        let (Some(flash_bytes), Some(ram_bytes)) = (memory.flash_bytes(), memory.ram_bytes())
+        else {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E1601",
+                    format!(
+                        "controller '{controller_name}' chip memory cannot compile to whole bytes"
+                    ),
+                )
+                .at(format!("controllers.{controller_name}.board")),
+            );
+            continue;
+        };
+        let Some(board_version) = chosen.get(&controller.board) else {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E1602",
+                    format!(
+                        "controller '{controller_name}' board '{}' has no exact selected version",
+                        controller.board
+                    ),
+                )
+                .at(format!("controllers.{controller_name}.board")),
+            );
+            continue;
+        };
+
+        let mut features = firmware.features.clone();
+        features.sort();
+        features.dedup();
+        let native_drivers: std::collections::BTreeSet<String> = doc
+            .components
+            .iter()
+            .filter(|(component_name, _)| {
+                resolved
+                    .assignments
+                    .get(*component_name)
+                    .into_iter()
+                    .flatten()
+                    .any(|assignment| {
+                        assignment
+                            .resource
+                            .0
+                            .split_once('.')
+                            .is_some_and(|(candidate, _)| candidate == controller_name)
+                    })
+            })
+            .filter_map(|(_, component)| {
+                device_reqs
+                    .get(&component.kind)
+                    .map(|requirement| requirement.reference.clone())
+            })
+            .collect();
+
+        resolved.controller_build_plans.insert(
+            controller_name.clone(),
+            ControllerBuildPlan {
+                board: format!("{}@{board_version}", controller.board),
+                chip: chip_reference.clone(),
+                target_triple: firmware.target_triple.clone(),
+                toolchain: firmware.toolchain.clone(),
+                build_profile: firmware.build_profile.clone(),
+                protocol_version: firmware.protocol_version.clone(),
+                abi_version: firmware.abi_version.clone(),
+                flash_bytes,
+                ram_bytes,
+                bootloader_offset_bytes: boot.default_bootloader_offset,
+                features,
+                native_drivers: native_drivers.into_iter().collect(),
+            },
+        );
+    }
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return fail(std::mem::take(diagnostics), phases_run.clone());
+    }
     ResolveOutcome {
         resolved: Some(resolved),
         diagnostics: std::mem::take(diagnostics),
@@ -1872,6 +2010,37 @@ mod tests {
         registry
     }
 
+    fn registry_without_firmware_target() -> (LocalRegistry, std::path::PathBuf) {
+        let mut registry = registry();
+        let package = registry
+            .packages
+            .iter_mut()
+            .find(|package| package.reference.to_string() == "chips/generic-mcu@1.5.0")
+            .expect("latest generic MCU package");
+        let source = std::fs::read_to_string(package.dir.join("package.yaml")).unwrap();
+        let metadata_start = source.find("\nmemory:\n").unwrap();
+        let peripherals_start = source
+            .find("\n# Synthetic certified-target budgets")
+            .unwrap();
+        let stripped = format!(
+            "{}{}",
+            &source[..metadata_start],
+            &source[peripherals_start..]
+        );
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temporary = std::env::temp_dir().join(format!(
+            "dryer-resolver-no-target-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temporary).unwrap();
+        std::fs::write(temporary.join("package.yaml"), stripped).unwrap();
+        package.dir = temporary.clone();
+        (registry, temporary)
+    }
+
     fn fixture() -> String {
         std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1884,8 +2053,8 @@ mod tests {
     fn the_fixture_machine_resolves_with_expected_assignments() {
         let o = resolve_source(&fixture(), &registry());
         assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
-        assert_eq!(o.phases_run.len(), 10, "all implemented phases ran");
-        assert_eq!(*o.phases_run.last().unwrap(), Phase::FirmwarePartitioning);
+        assert_eq!(o.phases_run.len(), 11, "all implemented phases ran");
+        assert_eq!(*o.phases_run.last().unwrap(), Phase::ArtifactPlanning);
         let g = o.resolved.unwrap();
         let x = &g.assignments["x_driver"][0];
         assert_eq!(x.resource.0, "mainboard.motor0");
@@ -2519,10 +2688,7 @@ mod tests {
     fn safe_states_are_partitioned_to_concrete_controller_resources() {
         let outcome = resolve_source(&fixture(), &registry());
         assert!(outcome.is_ok(), "diagnostics: {:#?}", outcome.diagnostics);
-        assert_eq!(
-            outcome.phases_run.last(),
-            Some(&Phase::FirmwarePartitioning)
-        );
+        assert_eq!(outcome.phases_run.last(), Some(&Phase::ArtifactPlanning));
         let graph = outcome.resolved.unwrap();
         let safety = &graph.controller_safety["mainboard"];
         assert_eq!(safety.len(), 2, "{safety:#?}");
@@ -2552,6 +2718,48 @@ mod tests {
             .explain("x_motor")
             .unwrap()
             .contains("safe_state--> mainboard.motor0 = disabled"));
+    }
+
+    #[test]
+    fn controller_build_inputs_are_planned_from_exact_target_packages() {
+        let outcome = resolve_source(&fixture(), &registry());
+        assert!(outcome.is_ok(), "diagnostics: {:#?}", outcome.diagnostics);
+        let graph = outcome.resolved.unwrap();
+        let plan = &graph.controller_build_plans["mainboard"];
+        assert_eq!(plan.board, "boards/example-mainboard@1.0.0");
+        assert_eq!(plan.chip, "chips/generic-mcu@1.5.0");
+        assert_eq!(plan.target_triple, "thumbv7em-none-eabihf");
+        assert_eq!(plan.toolchain, "rustc-1.85.0");
+        assert_eq!(plan.build_profile, "release");
+        assert_eq!(plan.protocol_version, "dryer.control/v1");
+        assert_eq!(plan.abi_version, "dryer.controller/v1");
+        assert_eq!(plan.flash_bytes, 524_288);
+        assert_eq!(plan.ram_bytes, 131_072);
+        assert_eq!(plan.bootloader_offset_bytes, 16_384);
+        assert_eq!(
+            plan.features,
+            ["adc", "pwm", "step_scheduler", "usb_transport"]
+        );
+        assert_eq!(plan.native_drivers, ["devices/tmc2209@2.1.0"]);
+    }
+
+    #[test]
+    fn artifact_planning_rejects_a_chip_without_firmware_target_metadata() {
+        let (registry, temporary) = registry_without_firmware_target();
+        let outcome = resolve_source(&fixture(), &registry);
+        std::fs::remove_dir_all(temporary).unwrap();
+        assert!(!outcome.is_ok());
+        assert_eq!(outcome.phases_run.last(), Some(&Phase::ArtifactPlanning));
+        let diagnostic = outcome
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "E1600")
+            .unwrap();
+        assert!(
+            diagnostic.message.contains("memory, boot, or firmware"),
+            "{}",
+            diagnostic.message
+        );
     }
 
     #[test]

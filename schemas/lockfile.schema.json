@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dryer.yemelianov.dev/schemas/lockfile.schema.json",
-  "title": "Dryer machine.lock v3",
-  "description": "Generated capture of one successful resolution. Users do not edit it. Normative reference implementation: crates/machine-lock. v3 adds a required, versioned controller-local safety partition while preserving portable full-package content hashes. Registry source, firmware targets, protocol versions, and feature flags remain deferred — see the crate docs.",
+  "title": "Dryer machine.lock v4",
+  "description": "Generated capture of one successful resolution. Users do not edit it. Normative reference implementation: crates/machine-lock. v4 adds required, versioned controller build inputs (exact board/chip/driver packages, target, toolchain, memory, protocol/ABI, and features) alongside the v3 controller-local safety partition. Registry source identity and expected reproducible output hashes remain deferred.",
   "type": "object",
   "additionalProperties": false,
   "required": ["lock_version", "machine_hash", "resolver_version", "packages", "safety_profile", "controllers"],
   "properties": {
-    "lock_version": { "const": 3 },
+    "lock_version": { "const": 4 },
     "machine_hash": { "$ref": "#/$defs/sha256" },
     "resolver_version": { "type": "string" },
     "packages": {
@@ -35,14 +35,15 @@
     "locked_controller": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["board", "resolved_resources", "safety"],
+      "required": ["board", "resolved_resources", "safety", "build"],
       "properties": {
         "board": { "type": "string", "minLength": 1 },
         "resolved_resources": {
           "type": "object",
           "additionalProperties": { "type": "string", "minLength": 1 }
         },
-        "safety": { "$ref": "#/$defs/controller_safety" }
+        "safety": { "$ref": "#/$defs/controller_safety" },
+        "build": { "$ref": "#/$defs/controller_build" }
       }
     },
     "controller_safety": {
@@ -68,6 +69,48 @@
         "state": { "enum": ["off", "disabled"] },
         "heartbeat_timeout_us": { "type": "integer", "minimum": 1 },
         "sensor": { "type": "string", "minLength": 1 }
+      }
+    },
+    "controller_build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "board",
+        "chip",
+        "target_triple",
+        "toolchain",
+        "build_profile",
+        "protocol_version",
+        "abi_version",
+        "flash_bytes",
+        "ram_bytes",
+        "bootloader_offset_bytes",
+        "features",
+        "native_drivers"
+      ],
+      "properties": {
+        "schema": { "const": "dryer.controller-build-plan/v1" },
+        "board": { "type": "string", "minLength": 1 },
+        "chip": { "type": "string", "minLength": 1 },
+        "target_triple": { "type": "string", "minLength": 1 },
+        "toolchain": { "type": "string", "minLength": 1 },
+        "build_profile": { "type": "string", "minLength": 1 },
+        "protocol_version": { "type": "string", "pattern": "^[a-z.]+/v[1-9][0-9]*$" },
+        "abi_version": { "type": "string", "pattern": "^[a-z.]+/v[1-9][0-9]*$" },
+        "flash_bytes": { "type": "integer", "minimum": 1 },
+        "ram_bytes": { "type": "integer", "minimum": 1 },
+        "bootloader_offset_bytes": { "type": "integer", "minimum": 0 },
+        "features": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" }
+        },
+        "native_drivers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
       }
     }
   }

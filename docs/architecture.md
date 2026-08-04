@@ -15,7 +15,7 @@ Control protocol             — none
 MCU runtime                  — simulator (behavioral test model, no firmware)
 Hardware                     — none
 ─────────────────────────────────────────────
-Firmware input artifacts     — firmware-build (safety config only; no toolchain)
+Firmware input artifacts     — firmware-build (safety config + build plans; no executor)
 Deployment planning          — firmware-flash (read-only plans; no executor)
 Reproducibility              — machine-lock
 Machine resolution           — machine-resolver
@@ -54,8 +54,9 @@ mutating deployment implementation.
   electrical, bus-frequency, measured latency/jitter, and DMA-route requirements as
   deterministic hard allocation constraints. Accepted evidence stays on assignments.
 - `machine-lock` captures successful resolution, exact package-tree content
-  digests, and controller-local safety bindings. `firmware-build` turns those
-  bindings into versioned, byte-stable safety artifacts without rereading policy.
+  digests, controller-local safety bindings, and deterministic firmware target/build
+  inputs. `firmware-build` turns those bindings into versioned, byte-stable safety
+  and build-plan artifacts without rereading package policy or target metadata.
   `firmware-flash` consumes the lock and board-package metadata, rejects
   manifest or companion-file drift, but cannot call back into resolution or mutate
   hardware.
@@ -66,9 +67,10 @@ mutating deployment implementation.
 
 `machine-parser` owns the **source graph**. `machine-resolver` expands templates and
 produces a separate `ResolvedGraph`; it never mutates `MachineDoc`. `machine-lock`
-serializes a reproducibility projection of that result. `firmware-build` creates one
-controller-safety artifact from each locked partition. A flash plan binds a locked
-controller to an observed USB candidate and artifact, but it is not yet a
+serializes a reproducibility projection of that result. `firmware-build` creates
+controller-safety and controller-build-plan artifacts from each locked partition. A
+flash plan binds a locked controller to an observed USB candidate and artifact, but it
+is not yet a
 `DeployedGraph`: activation, confirmation, and persistent physical-controller identity
 do not exist. Runtime observation remains a future state-service type.
 
