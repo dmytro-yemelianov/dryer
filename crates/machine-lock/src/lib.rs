@@ -13,162 +13,19 @@
 //! lockfiles for identical inputs. The on-disk file is YAML for humans;
 //! `canonical_bytes`/`lock_hash` always use the JSON form.
 
+mod model;
+mod wire;
+
+pub use model::{
+    LockedBuildConfig, LockedController, LockedPackage, LockedSafeState, LockedSafetyConfig,
+    Lockfile, CONTROLLER_BUILD_SCHEMA, CONTROLLER_SAFETY_SCHEMA, LOCK_VERSION,
+};
+
 use dryer_machine_resolver::ResolvedGraph;
 use dryer_machine_schema::Diagnostic;
-use dryer_package_model::{LocalRegistry, RegistrySource};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use sha2::{Digest, Sha256};
+use dryer_package_model::LocalRegistry;
 use std::collections::BTreeMap;
-
-pub const LOCK_VERSION: u32 = 5;
-pub const CONTROLLER_SAFETY_SCHEMA: &str = "dryer.controller-safety/v1";
-pub const CONTROLLER_BUILD_SCHEMA: &str = "dryer.controller-build-plan/v1";
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Lockfile {
-    pub lock_version: u32,
-    /// sha256 of the exact machine-manifest bytes that resolved.
-    pub machine_hash: String,
-    /// The resolver that produced this (crate version; §12 'resolver version').
-    pub resolver_version: String,
-    /// Present and required in lockfile v5+; absent in legacy v1-v4 locks.
-    pub registry_source: Option<RegistrySource>,
-    pub packages: Vec<LockedPackage>,
-    /// The safety profile the resolution validated against (§12 requires
-    /// the lock to pin the safety-profile version).
-    pub safety_profile: LockedPackage,
-    pub controllers: BTreeMap<String, LockedController>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockedPackage {
-    /// `namespace/name@version`.
-    pub id: String,
-    /// sha256 of the package's `package.yaml` bytes, retained for focused
-    /// manifest drift diagnostics.
-    pub manifest_hash: String,
-    /// Portable sha256 over every path and regular-file byte in the package.
-    /// Empty only when reading a legacy v1 lockfile.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub content_hash: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct LockedController {
-    pub board: String,
-    /// `component/via` → connector id on this controller.
-    pub resolved_resources: BTreeMap<String, String>,
-    /// Present and required in lockfile v3+; absent in legacy v1/v2 locks.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub safety: Option<LockedSafetyConfig>,
-    /// Present and required in lockfile v4+; absent in legacy v1-v3 locks.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub build: Option<LockedBuildConfig>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockedBuildConfig {
-    pub schema: String,
-    pub board: String,
-    pub chip: String,
-    pub target_triple: String,
-    pub toolchain: String,
-    pub build_profile: String,
-    pub protocol_version: String,
-    pub abi_version: String,
-    pub flash_bytes: u64,
-    pub ram_bytes: u64,
-    pub bootloader_offset_bytes: u64,
-    pub features: Vec<String>,
-    pub native_drivers: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockedSafetyConfig {
-    pub schema: String,
-    pub states: Vec<LockedSafeState>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockedSafeState {
-    pub component: String,
-    pub class: String,
-    /// Controller-local connector/resource id.
-    pub resource: String,
-    pub state: dryer_package_model::safety::SafeState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub heartbeat_timeout_us: Option<u64>,
-    /// Controller-local sensor resource when required by policy.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sensor: Option<String>,
-}
-
-#[derive(Serialize)]
-struct LockfileRef<'a> {
-    lock_version: u32,
-    machine_hash: &'a str,
-    resolver_version: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    registry_source: &'a Option<RegistrySource>,
-    packages: &'a [LockedPackage],
-    safety_profile: &'a LockedPackage,
-    controllers: &'a BTreeMap<String, LockedController>,
-}
-
-#[derive(Deserialize)]
-struct LockfileOwned {
-    lock_version: u32,
-    machine_hash: String,
-    resolver_version: String,
-    #[serde(default)]
-    registry_source: Option<RegistrySource>,
-    packages: Vec<LockedPackage>,
-    safety_profile: LockedPackage,
-    controllers: BTreeMap<String, LockedController>,
-}
-
-impl Serialize for Lockfile {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.validate().map_err(serde::ser::Error::custom)?;
-        LockfileRef {
-            lock_version: self.lock_version,
-            machine_hash: &self.machine_hash,
-            resolver_version: &self.resolver_version,
-            registry_source: &self.registry_source,
-            packages: &self.packages,
-            safety_profile: &self.safety_profile,
-            controllers: &self.controllers,
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Lockfile {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = LockfileOwned::deserialize(deserializer)?;
-        let lock = Self {
-            lock_version: wire.lock_version,
-            machine_hash: wire.machine_hash,
-            resolver_version: wire.resolver_version,
-            registry_source: wire.registry_source,
-            packages: wire.packages,
-            safety_profile: wire.safety_profile,
-            controllers: wire.controllers,
-        };
-        lock.validate().map_err(serde::de::Error::custom)?;
-        Ok(lock)
-    }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
-}
+use wire::sha256_hex;
 
 /// Build a lockfile from a successful resolution.
 ///
@@ -578,41 +435,6 @@ impl Lockfile {
             })?;
         }
         Ok(())
-    }
-
-    /// Canonical bytes: deterministic JSON. The hash of a lockfile is the
-    /// hash of these bytes regardless of how the YAML file was formatted.
-    pub fn try_canonical_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
-        serde_json::to_vec(self)
-    }
-
-    /// Infallible convenience wrapper for already validated lockfiles.
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        self.try_canonical_bytes().expect("lockfile serializes")
-    }
-
-    /// Fallible lock hash for callers handling untrusted or mutated lock data.
-    pub fn try_lock_hash(&self) -> Result<String, serde_json::Error> {
-        self.try_canonical_bytes().map(|bytes| sha256_hex(&bytes))
-    }
-
-    /// Infallible convenience wrapper for already validated lockfiles.
-    pub fn lock_hash(&self) -> String {
-        self.try_lock_hash().expect("lockfile serializes")
-    }
-
-    /// The human-facing on-disk form (`machine.lock`).
-    pub fn try_to_yaml(&self) -> Result<String, serde_yaml::Error> {
-        serde_yaml::to_string(self)
-    }
-
-    /// Infallible convenience wrapper for already validated lockfiles.
-    pub fn to_yaml(&self) -> String {
-        self.try_to_yaml().expect("lockfile serializes")
-    }
-
-    pub fn from_yaml(text: &str) -> Result<Self, serde_yaml::Error> {
-        serde_yaml::from_str(text)
     }
 }
 
