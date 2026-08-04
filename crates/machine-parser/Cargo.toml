@@ -1,5 +1,5 @@
 [package]
-name = "forge-machine-parser"
+name = "dryer-machine-parser"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,8 @@ description = "YAML to validated Machine Graph with structured, located diagnost
 
 [dependencies]
 serde_yaml = { workspace = true }
-forge-machine-schema = { path = "../machine-schema" }
-forge-package-model = { path = "../package-model" }
+dryer-machine-schema = { path = "../machine-schema" }
+dryer-package-model = { path = "../package-model" }
 yaml-rust2 = { version = "0.10", default-features = false }
 
 [dev-dependencies]

@@ -1,21 +1,27 @@
-# ForgeOS
+# Dryer
 
 A modular, cross-platform control platform for 3D printers and other motion-control
 machines. Its core abstraction is a typed, validated **Machine Graph** describing the
 complete machine; a deterministic **resolver** turns that graph plus a package registry
 into locked, explainable firmware and runtime configuration.
 
-> **Naming note:** *ForgeOS* is a working name (spec §1). Crate names carry a `forge-`
-> prefix provisionally; nothing here is a stable public identifier yet.
+> **Naming:** the project is **Dryer** (named 2026-08-04; the spec was drafted under
+> the working name *ForgeOS*, preserved as-is in `docs/spec.md`). Crates are
+> `dryer-*`; the manifest API version is `dryer.machine/v0.1`. Sibling project:
+> [dry](https://github.com/dmytro-yemelianov/dry) compiles and audits the *job*;
+> Dryer configures and (eventually) runs the *machine*.
 
-**Status: Phase 0 — specifications and repository foundations.** This repository
-currently contains the Machine Graph v0.1 schema types and parser, the package model
-with local registry loading, and the resource model — the first four steps of the
-implementation order (spec §29). There is no firmware, no resolver, and no motion
-stack yet; see `docs/implementation-roadmap.md` for what exists versus what is planned.
+**Status: configuration layer complete, no runtime yet.** This repository contains
+the Machine Graph v0.1 schema and parser (exact source locations), the package model
+with a multi-version local registry, the resource model, a nine-phase deterministic
+resolver (transitive dependency closure, graph expansion from machine templates,
+explicit + search-based connector allocation, electrical and safety-coverage
+validation, explainable assignments), and hashed `machine.lock` generation with a
+drift-gated golden. There is no firmware, no motion stack, and no control protocol
+yet; see `docs/implementation-roadmap.md` for exactly what exists versus what is
+planned — a checked box there means tests pass, not that a type was declared.
 
-The authoritative specification lives in `docs/` (imported from the ForgeOS Codex
-spec, Draft v0.1). Key principles:
+The authoritative specification lives in `docs/spec.md` (Draft v0.1). Key principles:
 
 - the Machine Graph is the single source of truth;
 - explicit, versioned layer boundaries;
@@ -38,7 +44,7 @@ spec, Draft v0.1). Key principles:
 
 ```bash
 cargo test --workspace
-cargo run -p forge-machine-parser --example validate examples/minimal-cartesian/machine.yaml
+cargo run -p dryer-machine-parser --example validate examples/minimal-cartesian/machine.yaml
 ```
 
 ## License

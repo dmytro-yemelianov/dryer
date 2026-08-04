@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://forgeos.dev/schemas/lockfile.schema.json",
-  "title": "ForgeOS machine.lock v1",
+  "$id": "https://dryer.yemelianov.dev/schemas/lockfile.schema.json",
+  "title": "Dryer machine.lock v1",
   "description": "Generated capture of one successful resolution. Users do not edit it. Normative reference implementation: crates/machine-lock. v1 field scope is deliberately partial (no registry source, firmware targets, protocol versions, feature flags, or safety-profile versions yet) — see the crate docs.",
   "type": "object",
   "additionalProperties": false,

@@ -11,7 +11,7 @@ pub mod device;
 pub mod machine;
 pub mod safety;
 
-use forge_machine_schema::{valid_identifier, Diagnostic};
+use dryer_machine_schema::{valid_identifier, Diagnostic};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -394,7 +394,7 @@ mod tests {
         let errors: Vec<_> = reg
             .diagnostics
             .iter()
-            .filter(|d| d.severity == forge_machine_schema::Severity::Error)
+            .filter(|d| d.severity == dryer_machine_schema::Severity::Error)
             .collect();
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
         let pkg = reg.find("devices", "tmc2209").expect("fixture package");

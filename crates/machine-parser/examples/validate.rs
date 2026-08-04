@@ -1,4 +1,4 @@
-//! `cargo run -p forge-machine-parser --example validate <machine.yaml>`
+//! `cargo run -p dryer-machine-parser --example validate <machine.yaml>`
 //! Exit codes: 0 valid · 1 diagnostics with errors · 2 usage/IO.
 
 use std::process::ExitCode;
@@ -8,7 +8,7 @@ fn main() -> ExitCode {
         eprintln!("usage: validate <machine.yaml>");
         return ExitCode::from(2);
     };
-    let outcome = forge_machine_parser::parse_file(std::path::Path::new(&path));
+    let outcome = dryer_machine_parser::parse_file(std::path::Path::new(&path));
     for d in &outcome.diagnostics {
         eprintln!("{d}");
     }
@@ -18,7 +18,7 @@ fn main() -> ExitCode {
     if outcome.is_valid() {
         println!(
             "ok: {path} is a valid {} manifest",
-            forge_machine_schema::API_VERSION
+            dryer_machine_schema::API_VERSION
         );
         ExitCode::SUCCESS
     } else {

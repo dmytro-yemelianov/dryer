@@ -1,3 +1,7 @@
+> **Historical note (2026-08-04):** this spec was drafted under the working name
+> **ForgeOS**; the project has since been named **Dryer**. The body is preserved
+> verbatim — read every occurrence of "ForgeOS"/`forge.*` as Dryer/`dryer.*`.
+
 # Project Specification: Modular Rust Platform for Machine Control
 
 Status: Draft v0.1  

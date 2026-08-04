@@ -1,4 +1,4 @@
-api_version: forge.machine/v0.1
+api_version: dryer.machine/v0.1
 kind: Machine
 
 metadata:

@@ -1,5 +1,5 @@
 [package]
-name = "forge-machine-resolver"
+name = "dryer-machine-resolver"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,10 +9,10 @@ description = "Deterministic resolution of a Machine Graph against a package reg
 
 [dependencies]
 serde = { workspace = true }
-forge-machine-schema = { path = "../machine-schema" }
-forge-machine-parser = { path = "../machine-parser" }
-forge-package-model = { path = "../package-model" }
-forge-resource-model = { path = "../resource-model" }
+dryer-machine-schema = { path = "../machine-schema" }
+dryer-machine-parser = { path = "../machine-parser" }
+dryer-package-model = { path = "../package-model" }
+dryer-resource-model = { path = "../resource-model" }
 semver.workspace = true
 
 [dev-dependencies]

@@ -1,5 +1,5 @@
 [package]
-name = "forge-resource-model"
+name = "dryer-resource-model"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

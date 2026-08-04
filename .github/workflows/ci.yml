@@ -21,10 +21,10 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - name: schema fixtures validate
-        run: cargo run -p forge-machine-parser --example validate examples/minimal-cartesian/machine.yaml
+        run: cargo run -p dryer-machine-parser --example validate examples/minimal-cartesian/machine.yaml
       - name: fixture machine resolves against the fixture registry
-        run: cargo run -p forge-machine-resolver --example resolve examples/minimal-cartesian/machine.yaml
+        run: cargo run -p dryer-machine-resolver --example resolve examples/minimal-cartesian/machine.yaml
       - name: golden lockfile has not drifted
         run: |
-          cargo run -p forge-machine-lock --example lock examples/minimal-cartesian/machine.yaml -o examples/minimal-cartesian/machine.lock
+          cargo run -p dryer-machine-lock --example lock examples/minimal-cartesian/machine.yaml -o examples/minimal-cartesian/machine.lock
           git diff --exit-code examples/minimal-cartesian/machine.lock

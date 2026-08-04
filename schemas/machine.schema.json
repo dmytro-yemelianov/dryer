@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://forgeos.dev/schemas/machine.schema.json",
-  "title": "ForgeOS Machine Graph v0.1 (source graph)",
+  "$id": "https://dryer.yemelianov.dev/schemas/machine.schema.json",
+  "title": "Dryer Machine Graph v0.1 (source graph)",
   "description": "User-authored machine manifest. Normative reference implementation: crates/machine-schema. Quantity strings ('300 mm/s') are schema-typed as strings; their unit/dimension validation is semantic and performed by the parser.",
   "type": "object",
   "additionalProperties": false,
   "required": ["api_version", "kind", "metadata", "controllers", "components", "kinematics", "safety"],
   "properties": {
-    "api_version": { "const": "forge.machine/v0.1" },
+    "api_version": { "const": "dryer.machine/v0.1" },
     "kind": { "const": "Machine" },
     "metadata": {
       "type": "object",

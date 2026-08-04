@@ -1,6 +1,6 @@
 # Architecture — Phase 0 view
 
-The full architecture is defined by the ForgeOS spec (Draft v0.1). This page maps
+The full architecture is defined by the Dryer spec (Draft v0.1). This page maps
 the spec's layers to what exists in the workspace today.
 
 ## Layers (spec §3.2)
@@ -47,7 +47,7 @@ runtime — they must never be represented by mutating `MachineDoc`.
 
 ## External integration intent
 
-Toolpath/job auditing is out of scope for ForgeOS itself: the job pipeline is
+Toolpath/job auditing is out of scope for Dryer itself: the job pipeline is
 expected to delegate pre-flight G-code review to a program auditor
 ([dry](https://github.com/dmytro-yemelianov/dry)). The dependency direction is
-ForgeOS → dry, never the reverse.
+Dryer → dry, never the reverse.

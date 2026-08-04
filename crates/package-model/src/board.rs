@@ -5,7 +5,7 @@
 //! printer-specific assignments ("X motor"); they offer *connectors*
 //! that a machine's components claim.
 
-use forge_machine_schema::{Diagnostic, Dimension, Quantity};
+use dryer_machine_schema::{Diagnostic, Dimension, Quantity};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -95,7 +95,7 @@ impl crate::LoadedPackage {
         })?;
         let mut diags = Vec::new();
         for (cid, c) in &board.connectors {
-            if !forge_machine_schema::valid_identifier(cid) {
+            if !dryer_machine_schema::valid_identifier(cid) {
                 diags.push(Diagnostic::error(
                     "E0613",
                     format!(

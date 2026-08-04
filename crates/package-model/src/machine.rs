@@ -7,7 +7,7 @@
 //! defaults*. Expansion semantics live in the resolver; the rule there is
 //! source-wins — a user's manifest always shadows a template.
 
-use forge_machine_schema::{Component, Diagnostic};
+use dryer_machine_schema::{Component, Diagnostic};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 

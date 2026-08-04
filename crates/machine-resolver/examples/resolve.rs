@@ -1,4 +1,4 @@
-//! `cargo run -p forge-machine-resolver --example resolve <machine.yaml> [packages-dir]`
+//! `cargo run -p dryer-machine-resolver --example resolve <machine.yaml> [packages-dir]`
 //! Exit codes: 0 resolved · 1 diagnostics with errors · 2 usage/IO.
 
 use std::process::ExitCode;
@@ -18,8 +18,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let registry = forge_package_model::LocalRegistry::load(std::path::Path::new(&packages));
-    let outcome = forge_machine_resolver::resolve_source(&source, &registry);
+    let registry = dryer_package_model::LocalRegistry::load(std::path::Path::new(&packages));
+    let outcome = dryer_machine_resolver::resolve_source(&source, &registry);
 
     for d in registry.diagnostics.iter().chain(&outcome.diagnostics) {
         eprintln!("{d}");

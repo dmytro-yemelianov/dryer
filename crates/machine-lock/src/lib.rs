@@ -14,9 +14,9 @@
 //! lockfiles for identical inputs. The on-disk file is YAML for humans;
 //! `canonical_bytes`/`lock_hash` always use the JSON form.
 
-use forge_machine_resolver::ResolvedGraph;
-use forge_machine_schema::Diagnostic;
-use forge_package_model::LocalRegistry;
+use dryer_machine_resolver::ResolvedGraph;
+use dryer_machine_schema::Diagnostic;
+use dryer_package_model::LocalRegistry;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -66,7 +66,7 @@ pub fn lock(
     registry: &LocalRegistry,
     resolved: &ResolvedGraph,
 ) -> Result<Lockfile, Vec<Diagnostic>> {
-    let parsed = forge_machine_parser::parse_str(source);
+    let parsed = dryer_machine_parser::parse_str(source);
     let Some(doc) = parsed.doc else {
         return Err(parsed.diagnostics);
     };
@@ -75,7 +75,7 @@ pub fn lock(
     // roots and transitive dependencies — not merely the manifest's list.
     let mut packages = Vec::new();
     for pkg in &resolved.packages {
-        let Ok(r) = forge_package_model::PackageRef::parse(pkg) else {
+        let Ok(r) = dryer_package_model::PackageRef::parse(pkg) else {
             continue; // the resolver produced these; malformed would be its bug
         };
         let Some(found) = registry.find_version(&r.namespace, &r.name, &r.version) else {
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn locking_the_fixture_is_deterministic_and_round_trips() {
         let (source, registry) = setup();
-        let resolved = forge_machine_resolver::resolve_source(&source, &registry)
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
             .resolved
             .expect("fixture resolves");
         let a = lock(&source, &registry, &resolved).unwrap();
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn the_lock_captures_assignments_under_the_right_controller() {
         let (source, registry) = setup();
-        let resolved = forge_machine_resolver::resolve_source(&source, &registry)
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
             .resolved
             .unwrap();
         let l = lock(&source, &registry, &resolved).unwrap();
@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn reformatting_the_manifest_changes_the_machine_hash() {
         let (source, registry) = setup();
-        let resolved = forge_machine_resolver::resolve_source(&source, &registry)
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
             .resolved
             .unwrap();
         let a = lock(&source, &registry, &resolved).unwrap();

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 /// The only Machine Graph API version this crate understands.
-pub const API_VERSION: &str = "forge.machine/v0.1";
+pub const API_VERSION: &str = "dryer.machine/v0.1";
 /// The only document kind this crate understands.
 pub const KIND_MACHINE: &str = "Machine";
 
@@ -285,7 +285,7 @@ pub struct MachineDoc {
     pub kind: String,
     pub metadata: Metadata,
     /// Package references (`namespace/name@version`); syntax is validated by
-    /// the parser via `forge-package-model` to keep this crate leaf-level.
+    /// the parser via `dryer-package-model` to keep this crate leaf-level.
     #[serde(default)]
     pub packages: Vec<String>,
     pub controllers: BTreeMap<String, Controller>,
@@ -438,7 +438,7 @@ mod tests {
     #[test]
     fn machine_doc_round_trips_through_yaml() {
         let yaml = r#"
-api_version: forge.machine/v0.1
+api_version: dryer.machine/v0.1
 kind: Machine
 metadata:
   name: test

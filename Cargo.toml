@@ -14,7 +14,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.78"
 license = "Apache-2.0"
-repository = "https://github.com/dmytro-yemelianov/forgeos"
+repository = "https://github.com/dmytro-yemelianov/dryer"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

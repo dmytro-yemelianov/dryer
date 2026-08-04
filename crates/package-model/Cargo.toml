@@ -1,5 +1,5 @@
 [package]
-name = "forge-package-model"
+name = "dryer-package-model"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,4 +11,4 @@ description = "Package identity, manifests, dependency ranges, and local directo
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 semver = { workspace = true }
-forge-machine-schema = { path = "../machine-schema" }
+dryer-machine-schema = { path = "../machine-schema" }

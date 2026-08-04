@@ -1,7 +1,7 @@
 //! Deterministic Machine Graph resolution (spec §11), v0.1 slice.
 //!
 //! Implements the resolver's explicit phase structure (§11.2) over the
-//! Phase 0 models. Phases 1–2 delegate to `forge-machine-parser`; phases
+//! Phase 0 models. Phases 1–2 delegate to `dryer-machine-parser`; phases
 //! 3–4 check and load packages; phase 5 is a recorded no-op (no package
 //! templates exist yet); phases 6–7 validate and allocate **explicit
 //! connector claims** — a component saying `connected_to: mainboard.motor0`
@@ -26,11 +26,11 @@
 //!
 //! Deliberately NOT here yet: timing validation, firmware partitioning,
 //! and graph expansion (templates). Each is a later slice; lockfile
-//! generation lives in `forge-machine-lock`.
+//! generation lives in `dryer-machine-lock`.
 
-use forge_machine_schema::{Diagnostic, Dimension, MachineDoc, Quantity, Severity};
-use forge_package_model::{board::BoardPackageFile, LocalRegistry, PackageRef};
-use forge_resource_model::ResourceId;
+use dryer_machine_schema::{Diagnostic, Dimension, MachineDoc, Quantity, Severity};
+use dryer_package_model::{board::BoardPackageFile, LocalRegistry, PackageRef};
+use dryer_resource_model::ResourceId;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -125,7 +125,7 @@ impl ResolveOutcome {
 /// inputs produce identical outcomes including diagnostic order.
 pub fn resolve_source(source: &str, registry: &LocalRegistry) -> ResolveOutcome {
     let mut phases_run = vec![Phase::Parse, Phase::SchemaValidation];
-    let parsed = forge_machine_parser::parse_str(source);
+    let parsed = dryer_machine_parser::parse_str(source);
     let mut diagnostics = parsed.diagnostics;
     let Some(doc) = parsed.doc else {
         return ResolveOutcome {
@@ -317,7 +317,7 @@ fn resolve_doc(
         return fail(std::mem::take(diagnostics), phases_run.clone());
     }
     // The closure: every package the machine uses, with its selected version.
-    let select = |path: &str| -> Option<&forge_package_model::LoadedPackage> {
+    let select = |path: &str| -> Option<&dryer_package_model::LoadedPackage> {
         let (ns, name) = path.split_once('/')?;
         match chosen.get(path) {
             Some(v) => registry.find_version(ns, name, v),
@@ -394,7 +394,7 @@ fn resolve_doc(
     let mut expanded = doc.clone();
     for path in chosen.keys() {
         let Some(pkg) = select(path) else { continue };
-        if pkg.kind != forge_package_model::PackageKind::Machine {
+        if pkg.kind != dryer_package_model::PackageKind::Machine {
             continue;
         }
         let template = match pkg.machine_payload() {
@@ -408,7 +408,7 @@ fn resolve_doc(
             }
         };
         for (cid, comp) in template.components {
-            if !forge_machine_schema::valid_identifier(&cid) {
+            if !dryer_machine_schema::valid_identifier(&cid) {
                 diagnostics.push(Diagnostic::error(
                     "E1131",
                     format!("template component '{cid}' from '{path}' is not a valid identifier"),

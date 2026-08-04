@@ -14,10 +14,10 @@
 
 pub mod spans;
 
-use forge_machine_schema::{
+use dryer_machine_schema::{
     valid_identifier, Diagnostic, Dimension, MachineDoc, Quantity, API_VERSION, KIND_MACHINE,
 };
-use forge_package_model::PackageRef;
+use dryer_package_model::PackageRef;
 use spans::SpanIndex;
 
 /// Result of parsing + validating one machine manifest.
@@ -35,7 +35,7 @@ impl ParseOutcome {
             && !self
                 .diagnostics
                 .iter()
-                .any(|d| d.severity == forge_machine_schema::Severity::Error)
+                .any(|d| d.severity == dryer_machine_schema::Severity::Error)
     }
 }
 
@@ -259,7 +259,7 @@ fn locate(mut d: Diagnostic, index: &SpanIndex) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_machine_schema::Severity;
+    use dryer_machine_schema::Severity;
 
     fn errors(o: &ParseOutcome) -> Vec<String> {
         o.diagnostics
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn bad_identifier_bad_unit_and_dangling_reference_all_reported_together() {
         let yaml = r#"
-api_version: forge.machine/v0.1
+api_version: dryer.machine/v0.1
 kind: Machine
 metadata:
   name: broken
@@ -323,7 +323,7 @@ safety:
     #[test]
     fn wrong_dimension_on_a_known_limit_is_an_error() {
         let yaml = r#"
-api_version: forge.machine/v0.1
+api_version: dryer.machine/v0.1
 kind: Machine
 metadata:
   name: t
@@ -345,7 +345,7 @@ safety:
 
     #[test]
     fn unknown_top_level_fields_are_rejected() {
-        let yaml = "api_version: forge.machine/v0.1\nkind: Machine\nmagic: true\n";
+        let yaml = "api_version: dryer.machine/v0.1\nkind: Machine\nmagic: true\n";
         let o = parse_str(yaml);
         assert!(o.doc.is_none());
         assert_eq!(o.diagnostics[0].code, "E0100");
@@ -354,7 +354,7 @@ safety:
     #[test]
     fn diagnostics_carry_paths_and_exact_locations() {
         let yaml = r#"
-api_version: forge.machine/v0.1
+api_version: dryer.machine/v0.1
 kind: Machine
 metadata:
   name: t
@@ -380,7 +380,7 @@ safety:
     #[test]
     fn can_transport_parent_must_reference_a_known_controller() {
         let yaml = r#"
-api_version: forge.machine/v0.1
+api_version: dryer.machine/v0.1
 kind: Machine
 metadata:
   name: t

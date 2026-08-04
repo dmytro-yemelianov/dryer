@@ -4,7 +4,7 @@
 //! into. Bus/signal requirements (§9 `requires.bus`, `requires.signals`)
 //! land with the capability-matching slice.
 
-use forge_machine_schema::Diagnostic;
+use dryer_machine_schema::Diagnostic;
 use serde::Deserialize;
 
 /// Full `package.yaml` view for a `kind: device` package.

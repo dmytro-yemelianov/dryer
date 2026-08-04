@@ -69,7 +69,7 @@ tests exist and pass, not that a type was declared.
   boards map connectors to timer/DMA peripherals, so there is data to validate
   against rather than an assumption; and compiling safe states into controller
   artifacts (firmware phases).
-- [~] **7. `machine-lock` canonical serialization and hashing** — `forge-machine-lock`
+- [~] **7. `machine-lock` canonical serialization and hashing** — `dryer-machine-lock`
   produces a deterministic lockfile (canonical JSON bytes + `sha256:` lock hash; YAML
   on disk) binding the machine-source hash, exact package versions with manifest
   hashes, resolver version, and per-controller resolved resources. Golden at

@@ -53,6 +53,70 @@ dependencies = [
 ]
 
 [[package]]
+name = "dryer-machine-lock"
+version = "0.1.0"
+dependencies = [
+ "dryer-machine-parser",
+ "dryer-machine-resolver",
+ "dryer-machine-schema",
+ "dryer-package-model",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+]
+
+[[package]]
+name = "dryer-machine-parser"
+version = "0.1.0"
+dependencies = [
+ "dryer-machine-schema",
+ "dryer-package-model",
+ "serde_json",
+ "serde_yaml",
+ "yaml-rust2",
+]
+
+[[package]]
+name = "dryer-machine-resolver"
+version = "0.1.0"
+dependencies = [
+ "dryer-machine-parser",
+ "dryer-machine-schema",
+ "dryer-package-model",
+ "dryer-resource-model",
+ "semver",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "dryer-machine-schema"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
+name = "dryer-package-model"
+version = "0.1.0"
+dependencies = [
+ "dryer-machine-schema",
+ "semver",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
+name = "dryer-resource-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -63,70 +127,6 @@ name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
-
-[[package]]
-name = "forge-machine-lock"
-version = "0.1.0"
-dependencies = [
- "forge-machine-parser",
- "forge-machine-resolver",
- "forge-machine-schema",
- "forge-package-model",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
-]
-
-[[package]]
-name = "forge-machine-parser"
-version = "0.1.0"
-dependencies = [
- "forge-machine-schema",
- "forge-package-model",
- "serde_json",
- "serde_yaml",
- "yaml-rust2",
-]
-
-[[package]]
-name = "forge-machine-resolver"
-version = "0.1.0"
-dependencies = [
- "forge-machine-parser",
- "forge-machine-schema",
- "forge-package-model",
- "forge-resource-model",
- "semver",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "forge-machine-schema"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_yaml",
-]
-
-[[package]]
-name = "forge-package-model"
-version = "0.1.0"
-dependencies = [
- "forge-machine-schema",
- "semver",
- "serde",
- "serde_yaml",
-]
-
-[[package]]
-name = "forge-resource-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "generic-array"

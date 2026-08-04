@@ -4,7 +4,7 @@
 //! class); compiling safe states into controller artifacts is a firmware-
 //! phase concern (§18.2 "must not rely solely on host initialization").
 
-use forge_machine_schema::{Diagnostic, Dimension, Quantity};
+use dryer_machine_schema::{Diagnostic, Dimension, Quantity};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
