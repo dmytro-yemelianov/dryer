@@ -1,7 +1,6 @@
 # Peripheral mapping — design
 
-Status: Implemented (step timing + bus matching) · Unblocked: timing budgets and bus/signal requirement matching
-(the two items the roadmap defers "until there is data to validate against").
+Status: Implemented (step timing, bus matching, DMA routing, and latency/jitter budgets).
 
 ## Problem
 
@@ -64,6 +63,12 @@ the chip table is an error (the board claims wiring the chip does not have).
   matches connectors whose pins carry `spiN.*` functions with
   `max_frequency >= min_frequency`. Search allocation treats it as a hard
   filter, like voltage domains.
+- **DMA routing and timing budgets** (§10.1, §24.4): device bus requirements
+  may add `dma_signals`, `max_latency`, and `max_jitter`. Chip targets publish
+  explicit DMA channel routes plus measured `worst_case_latency` and
+  `worst_case_jitter` for each bus. Missing data never satisfies a declared
+  requirement. Search and explicit claims both treat these as hard constraints;
+  accepted assignments record the exact measured bounds and DMA channel.
 - **Timer conflicts** (the spec's own E1204 example): two allocations needing
   the same `timN.chM` become detectable — the resource-model's
   `TimerCoupling`/`Exclusivity` machinery finally gets real operands.
@@ -76,9 +81,10 @@ the chip table is an error (the board claims wiring the chip does not have).
    checks yet; provenance only).
 3. `E1310` step-timing check + bus matching + timer-conflict detection, each
    with a failing fixture.
+4. `chips/generic-mcu@1.5.0` adds measured bus bounds and DMA routes; the
+   `dma-stream-sensor` fixture exercises accepted and rejected budgets.
 
 ## Non-goals
 
-Interrupt priorities, DMA channel *allocation* (routing claims only), clock-tree
-validation, and anything requiring per-silicon errata — all need data no package
-kind carries yet.
+Interrupt priorities, DMA channel ownership/exclusivity (this slice validates
+routing only), clock-tree validation, and per-silicon errata remain deferred.

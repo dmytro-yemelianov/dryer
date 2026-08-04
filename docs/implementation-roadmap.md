@@ -83,8 +83,12 @@ tests exist and pass, not that a type was declared.
   the chip instance must declare a sufficient max_frequency (E1315, hard search
   filter, recorded in provenance); device packages now drive the expected connector
   kind for explicit claims, retiring the v0 attribute table wherever a device
-  exists. *Remaining:* DMA/latency budgets, and compiling safe states into
-  controller artifacts (firmware phases).
+  exists. Slice 12 added **DMA routing plus latency/jitter budgets**: device bus
+  requirements name required DMA signals and maximum measured timing bounds; chip
+  targets publish explicit routes and worst-case values; missing/excess capability
+  is blocking and accepted evidence is recorded in assignment provenance. DMA
+  ownership remains deferred to firmware allocation. *Remaining:* compiling safe
+  states into controller artifacts (firmware phases).
 - [~] **7. `machine-lock` canonical serialization and hashing** — `dryer-machine-lock`
   produces a deterministic lockfile (canonical JSON bytes + `sha256:` lock hash; YAML
   on disk) binding the machine-source hash, exact package versions, resolver version,

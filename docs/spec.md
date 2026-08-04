@@ -660,6 +660,9 @@ requires:
     kind: spi
     min_frequency: 1 MHz
     preferred_frequency: 8 MHz
+    dma_signals: [rx]
+    max_latency: 50 us
+    max_jitter: 10 us
 
   signals:
     interrupt:

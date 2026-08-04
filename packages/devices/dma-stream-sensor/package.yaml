@@ -1,0 +1,27 @@
+package:
+  namespace: devices
+  name: dma-stream-sensor
+  version: 1.0.0
+  kind: device
+
+device:
+  class: stream_sensor
+  model: dma-stream-sensor
+
+requires:
+  connector: accessory_socket
+  voltage_domains:
+    - logic_3v3
+  bus:
+    kind: spi
+    min_frequency: 10 MHz
+    dma_signals: [rx]
+    max_latency: 50 us
+    max_jitter: 10 us
+
+dependencies:
+  chips/generic-mcu:
+    version: ">=1.5,<2.0"
+
+capabilities:
+  - stream.sample

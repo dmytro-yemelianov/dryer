@@ -48,6 +48,9 @@ mutating deployment implementation.
   `path`/`line`/`column` compatibility projection.)
 - Dependencies point downward only. `machine-resolver` depends on the model/parser
   layer; no model crate depends on the resolver.
+- `machine-resolver` joins board pins to chip capabilities and treats connector,
+  electrical, bus-frequency, measured latency/jitter, and DMA-route requirements as
+  deterministic hard allocation constraints. Accepted evidence stays on assignments.
 - `machine-lock` captures successful resolution and exact package-tree content
   digests. `firmware-flash` consumes the lock and board-package metadata, rejects
   manifest or companion-file drift, but cannot call back into resolution or mutate

@@ -5,9 +5,9 @@ packages:
 - id: boards/example-mainboard@1.0.0
   manifest_hash: sha256:ae764f00fa42948859de165899573df981e96101ce04a039097d8d6c2b62a5f5
   content_hash: sha256:d97ebe50757c8c943c5de0d2664bf43e3519fc711c43d33ff9d73b183ceb4241
-- id: chips/generic-mcu@1.4.0
-  manifest_hash: sha256:b62be2136024623b3918cf845bdb67067bcd3db126a826bdaba83f4201a9ab51
-  content_hash: sha256:4d1a6cf8bf77cd80ea48c636ce6ceb3c031a0a5927beb4426fde34e5dff0bf80
+- id: chips/generic-mcu@1.5.0
+  manifest_hash: sha256:c33997ad35e7e7101a6d1ad7dbb5ff09892ac8fac5dd0cf240bd83651762f44c
+  content_hash: sha256:1e6d42ded4bfd6f8dfe2326fbd9e0e525b6f84d3301075d5dc72660aecda2a02
 - id: devices/tmc2209@2.1.0
   manifest_hash: sha256:c74f5999cc67167ea1dfead1be2c8d65b6f0dee38f385d40920d8d279115daec
   content_hash: sha256:ad83ae3a61b4d95a6131c8503449eefbfdabf094ad5e5c2ac13d234dceed0b22
