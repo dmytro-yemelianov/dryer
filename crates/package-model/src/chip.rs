@@ -10,11 +10,56 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChipPackageFile {
     pub package: crate::PackageIdentity,
+    /// Controller memory budgets consumed by firmware artifact planning.
+    #[serde(default)]
+    pub memory: Option<MemoryLayout>,
+    /// Board-independent boot defaults for this chip target.
+    #[serde(default)]
+    pub boot: Option<BootConfig>,
+    /// Reproducible compiler/protocol identity for this validated target.
+    #[serde(default)]
+    pub firmware: Option<FirmwareTarget>,
     #[serde(default)]
     pub peripherals: Peripherals,
     /// Pin → capability tokens (`gpio` or `<peripheral>.<sub>`).
     #[serde(default)]
     pub pin_functions: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryLayout {
+    /// Quantity strings (`512 KiB`, `128 KiB`).
+    pub flash: String,
+    pub ram: String,
+}
+
+impl MemoryLayout {
+    pub fn flash_bytes(&self) -> Option<u64> {
+        memory_bytes(&self.flash)
+    }
+
+    pub fn ram_bytes(&self) -> Option<u64> {
+        memory_bytes(&self.ram)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BootConfig {
+    /// Reserved bytes at the start of flash before the application image.
+    #[serde(default)]
+    pub default_bootloader_offset: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FirmwareTarget {
+    pub target_triple: String,
+    pub toolchain: String,
+    pub build_profile: String,
+    pub protocol_version: String,
+    pub abi_version: String,
+    /// Compile-time target capabilities. Artifact planning sorts and dedups.
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -103,6 +148,29 @@ impl ChipPackageFile {
     }
 }
 
+fn memory_bytes(raw: &str) -> Option<u64> {
+    let bytes = Quantity::parse_as(raw, Dimension::Memory).ok()?.value;
+    let rounded = bytes.round();
+    (bytes > 0.0 && rounded <= u64::MAX as f64 && (bytes - rounded).abs() <= 1e-6)
+        .then_some(rounded as u64)
+}
+
+fn nonempty_unpadded(value: &str) -> bool {
+    !value.is_empty() && value.trim() == value
+}
+
+fn versioned_interface(value: &str) -> bool {
+    value.split_once("/v").is_some_and(|(name, version)| {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|character| character.is_ascii_lowercase() || character == '.')
+            && matches!(version.as_bytes().first(), Some(b'1'..=b'9'))
+            && version.bytes().all(|digit| digit.is_ascii_digit())
+            && version.parse::<u32>().is_ok()
+    })
+}
+
 impl crate::LoadedPackage {
     /// Parse this package's chip payload (`E065x` diagnostics). Validates
     /// that every pin-function token names a declared peripheral (or
@@ -176,6 +244,73 @@ impl crate::LoadedPackage {
                 }
             }
         }
+        if let Some(memory) = &chip.memory {
+            for (region, raw) in [("flash", &memory.flash), ("ram", &memory.ram)] {
+                if memory_bytes(raw).is_none() {
+                    diags.push(Diagnostic::error(
+                        "E0659",
+                        format!(
+                            "{}: memory.{region} must be a positive whole-byte quantity",
+                            self.reference
+                        ),
+                    ));
+                }
+            }
+            if let (Some(flash), Some(boot)) = (memory.flash_bytes(), &chip.boot) {
+                if boot.default_bootloader_offset >= flash {
+                    diags.push(Diagnostic::error(
+                        "E0660",
+                        format!(
+                            "{}: boot.default_bootloader_offset {} must leave space within {flash} flash bytes",
+                            self.reference, boot.default_bootloader_offset
+                        ),
+                    ));
+                }
+            }
+        }
+        if let Some(firmware) = &chip.firmware {
+            for (field, value) in [
+                ("target_triple", firmware.target_triple.as_str()),
+                ("toolchain", firmware.toolchain.as_str()),
+                ("build_profile", firmware.build_profile.as_str()),
+            ] {
+                if !nonempty_unpadded(value) {
+                    diags.push(Diagnostic::error(
+                        "E0661",
+                        format!(
+                            "{}: firmware.{field} must be non-empty and unpadded",
+                            self.reference
+                        ),
+                    ));
+                }
+            }
+            for (field, value) in [
+                ("protocol_version", firmware.protocol_version.as_str()),
+                ("abi_version", firmware.abi_version.as_str()),
+            ] {
+                if !versioned_interface(value) {
+                    diags.push(Diagnostic::error(
+                        "E0661",
+                        format!(
+                            "{}: firmware.{field} must use a '<name>/v<positive integer>' identifier",
+                            self.reference
+                        ),
+                    ));
+                }
+            }
+            let mut features = BTreeSet::new();
+            for feature in &firmware.features {
+                if !valid_identifier(feature) || !features.insert(feature.as_str()) {
+                    diags.push(Diagnostic::error(
+                        "E0662",
+                        format!(
+                            "{}: firmware feature '{feature}' must be a unique identifier",
+                            self.reference
+                        ),
+                    ));
+                }
+            }
+        }
         let bus_ids: BTreeSet<&str> = chip.buses().map(|bus| bus.id.as_str()).collect();
         let mut dma_ids = BTreeSet::new();
         for channel in &chip.peripherals.dma {
@@ -236,6 +371,19 @@ mod tests {
         assert_eq!(payload.pin_functions["PE11"], vec!["tim1.ch2", "gpio"]);
         assert_eq!(payload.peripherals.timers.len(), 2);
         assert_eq!(payload.peripherals.dma.len(), 2);
+        assert_eq!(
+            payload.memory.as_ref().unwrap().flash_bytes(),
+            Some(524_288)
+        );
+        assert_eq!(payload.memory.as_ref().unwrap().ram_bytes(), Some(131_072));
+        assert_eq!(
+            payload.firmware.as_ref().unwrap().target_triple,
+            "thumbv7em-none-eabihf"
+        );
+        assert_eq!(
+            payload.boot.as_ref().unwrap().default_bootloader_offset,
+            16_384
+        );
         assert_eq!(
             payload.dma_channel_for_route("spi1.rx").unwrap().id,
             "dma1.ch0"
@@ -298,5 +446,54 @@ peripherals:
             assert!(errors.iter().any(|diagnostic| diagnostic.code == code));
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_firmware_target_metadata_is_rejected() {
+        let root = temporary_registry("invalid-firmware-target");
+        let package = root.join("chips/bad-chip");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("README.md"), "fixture\n").unwrap();
+        std::fs::write(package.join("LICENSE"), "fixture\n").unwrap();
+        std::fs::write(
+            package.join("package.yaml"),
+            r#"package:
+  namespace: chips
+  name: bad-chip
+  version: 1.0.0
+  kind: chip
+memory:
+  flash: 128 KiB
+  ram: 1.5 B
+boot:
+  default_bootloader_offset: 200000
+firmware:
+  target_triple: ""
+  toolchain: rustc-test
+  build_profile: release
+  protocol_version: unversioned
+  abi_version: dryer.controller/v1
+  features: [adc, adc, "not valid"]
+"#,
+        )
+        .unwrap();
+        let registry = crate::LocalRegistry::load(&root);
+        let errors = registry
+            .find("chips", "bad-chip")
+            .unwrap()
+            .chip_payload()
+            .unwrap_err();
+        for code in ["E0659", "E0660", "E0661", "E0662"] {
+            assert!(errors.iter().any(|diagnostic| diagnostic.code == code));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interface_versions_match_the_normative_schema_pattern() {
+        assert!(super::versioned_interface("dryer.control/v1"));
+        assert!(!super::versioned_interface("dryer.control/v0"));
+        assert!(!super::versioned_interface("dryer.control/v01"));
+        assert!(!super::versioned_interface("dryer.control/v4294967296"));
     }
 }

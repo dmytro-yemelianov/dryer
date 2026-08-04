@@ -1,0 +1,19 @@
+[package]
+name = "dryer-firmware-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic per-controller firmware input artifacts compiled from machine.lock"
+
+[dependencies]
+dryer-machine-lock = { path = "../machine-lock" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+dryer-machine-resolver = { path = "../machine-resolver" }
+dryer-package-model = { path = "../package-model" }
+

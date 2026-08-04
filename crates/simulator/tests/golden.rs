@@ -1,7 +1,7 @@
 //! End-to-end golden (§29 step 9): resolve the fixture machine, build the
-//! simulator FROM the resolution (safety policy from the resolved profile,
-//! never test constants), run a small job, and compare the trace byte-for-
-//! byte against the committed golden.
+//! simulator FROM the compiled controller-safety artifact (never profile or
+//! host-only constants), run a small job, and compare the trace byte-for-byte
+//! against the committed golden.
 //!
 //! Regenerate deliberately with:
 //!   UPDATE_TRACE=1 cargo test -p dryer-simulator --test golden
@@ -14,9 +14,9 @@ fn repo_root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Build heater configs from the RESOLVED machine: components whose class
-/// the safety profile covers, with the profile's safe state and
-/// heartbeat timeout (parsed as a typed Time quantity → ticks).
+/// Build heater configs from the same locked artifact a controller firmware
+/// build consumes. The simulator deliberately does not reinterpret package
+/// policy, proving edge behavior is driven by compiled configuration.
 fn rig_from_resolution() -> (SimController, String) {
     let root = repo_root();
     let source =
@@ -29,36 +29,23 @@ fn rig_from_resolution() -> (SimController, String) {
         outcome.diagnostics
     );
 
-    let doc = dryer_machine_parser::parse_str(&source).doc.unwrap();
-    let (ns, name) = doc.safety.profile.split_once('/').unwrap();
-    let profile = registry
-        .find(ns, name)
-        .unwrap()
-        .safety_profile_payload()
-        .unwrap();
+    let resolved = outcome.resolved.unwrap();
+    let lock = dryer_machine_lock::lock(&source, &registry, &resolved).unwrap();
+    let artifact = dryer_firmware_build::compile_controller(&lock, "mainboard").unwrap();
 
     let mut heaters = Vec::new();
     let mut heater_name = String::new();
-    for (cname, comp) in &doc.components {
-        let Some(policy) = profile.classes.get(&comp.kind) else {
-            continue;
-        };
-        if comp.kind != "heater" {
+    for state in &artifact.states {
+        if state.class != "heater" {
             continue;
         }
-        let timeout = policy.heartbeat_timeout.as_deref().map(|q| {
-            let t =
-                dryer_machine_schema::Quantity::parse_as(q, dryer_machine_schema::Dimension::Time)
-                    .expect("profile validated at load");
-            (t.value * 1_000_000.0).round() as Tick // seconds → µs ticks
-        });
-        heater_name = cname.clone();
+        heater_name = state.component.clone();
         heaters.push(HeaterCfg {
-            name: cname.clone(),
+            name: state.component.clone(),
             gain_milli_c: 200_000,
             tau_ms: 2_000,
-            safe_state: policy.safe_state.clone(),
-            heartbeat_timeout: timeout,
+            safe_state: state.state.as_str().to_string(),
+            heartbeat_timeout: state.heartbeat_timeout_us,
         });
     }
     assert!(!heaters.is_empty(), "fixture has a covered heater");

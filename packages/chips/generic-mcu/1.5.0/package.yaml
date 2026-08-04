@@ -6,6 +6,24 @@ package:
 
 architecture:
   family: arm
+  isa: thumbv7em
+  endianness: little
+
+memory:
+  flash: 512 KiB
+  ram: 128 KiB
+
+boot:
+  default_bootloader_offset: 16384
+
+# Synthetic reproducible firmware target used by build-plan fixtures.
+firmware:
+  target_triple: thumbv7em-none-eabihf
+  toolchain: rustc-1.85.0
+  build_profile: release
+  protocol_version: dryer.control/v1
+  abi_version: dryer.controller/v1
+  features: [adc, pwm, step_scheduler, usb_transport]
 
 # Synthetic certified-target budgets for resolver fixtures. Production chip
 # packages must derive these values from measurements of the validated target.

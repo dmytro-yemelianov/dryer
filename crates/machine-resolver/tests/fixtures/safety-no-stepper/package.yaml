@@ -1,0 +1,14 @@
+package:
+  namespace: safety-profiles
+  name: desktop-fdm
+  version: 1.0.0
+  kind: safety-profile
+
+classes:
+  heater:
+    safe_state: "off"
+    heartbeat_timeout: 500 ms
+    requires_sensor: true
+
+  fan:
+    safe_state: "off"

@@ -47,11 +47,16 @@
 //! hard search/claim constraints, and accepted evidence is recorded on the
 //! assignment. DMA channel ownership/exclusivity remains a firmware concern.
 //!
-//! Deliberately NOT here yet: firmware partitioning.
-//! Lockfile generation lives in `dryer-machine-lock`.
+//! Slice 13 compiles validated class policy into concrete, controller-local
+//! safe-state bindings (phase 11). Lockfile generation and versioned artifact
+//! encoding remain separate downstream boundaries. Slice 14 adds phase 12
+//! artifact planning: exact board/chip/native-driver inputs plus validated
+//! target, toolchain, memory, feature, protocol, and ABI metadata.
 
 use dryer_machine_parser::spans::SpanIndex;
-use dryer_machine_schema::{Diagnostic, Dimension, MachineDoc, Quantity, Severity, SourceSpan};
+use dryer_machine_schema::{
+    Component, Diagnostic, Dimension, MachineDoc, Quantity, Severity, SourceSpan,
+};
 use dryer_package_model::{board::BoardPackageFile, LocalRegistry, PackageRef};
 use dryer_resource_model::ResourceId;
 use serde::Serialize;
@@ -71,6 +76,8 @@ pub enum Phase {
     ResourceAllocation,
     ElectricalValidation,
     SafetyValidation,
+    FirmwarePartitioning,
+    ArtifactPlanning,
 }
 
 /// One explainable assignment (§11.5): which requirement asked, what was
@@ -99,11 +106,53 @@ pub struct Assignment {
     pub pin_capabilities: BTreeMap<String, Vec<String>>,
 }
 
+/// One concrete edge-enforced safety action assigned to a controller during
+/// firmware partitioning (§11.2 phase 11, §18.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ControllerSafeState {
+    pub component: String,
+    pub class: String,
+    /// Concrete controller resource (`controller.connector`).
+    pub resource: ResourceId,
+    pub state: dryer_package_model::safety::SafeState,
+    /// Compiled to the controller's 1 us time quantum.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heartbeat_timeout_us: Option<u64>,
+    /// Concrete sensor resource on the same controller when policy requires it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sensor: Option<ResourceId>,
+}
+
+/// Deterministic controller build inputs selected during artifact planning
+/// (§11.2 phase 12, §21.1). Package references are exact and all physical
+/// capacities are compiled to integer bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ControllerBuildPlan {
+    pub board: String,
+    pub chip: String,
+    pub target_triple: String,
+    pub toolchain: String,
+    pub build_profile: String,
+    pub protocol_version: String,
+    pub abi_version: String,
+    pub flash_bytes: u64,
+    pub ram_bytes: u64,
+    pub bootloader_offset_bytes: u64,
+    pub features: Vec<String>,
+    pub native_drivers: Vec<String>,
+}
+
 /// The resolved graph, v0.1: deterministic assignments keyed by component,
 /// plus the full package closure the machine uses.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ResolvedGraph {
     pub assignments: BTreeMap<String, Vec<Assignment>>,
+    /// Controller id → deterministic local safety configuration.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub controller_safety: BTreeMap<String, Vec<ControllerSafeState>>,
+    /// Controller id → deterministic firmware target/build inputs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub controller_build_plans: BTreeMap<String, ControllerBuildPlan>,
     /// Every package the resolution selected — explicit pins, implicit
     /// roots (boards, safety profile) and transitive dependencies — as
     /// `namespace/name@version`, sorted. This is what the lockfile pins.
@@ -113,9 +162,18 @@ pub struct ResolvedGraph {
 impl ResolvedGraph {
     /// Explain one component's assignments (the CLI `explain` seed, §11.5).
     pub fn explain(&self, component: &str) -> Option<String> {
-        let list = self.assignments.get(component)?;
+        let list = self.assignments.get(component);
+        let safety: Vec<&ControllerSafeState> = self
+            .controller_safety
+            .values()
+            .flatten()
+            .filter(|binding| binding.component == component)
+            .collect();
+        if list.is_none() && safety.is_empty() {
+            return None;
+        }
         let mut s = String::new();
-        for a in list {
+        for a in list.into_iter().flatten() {
             s.push_str(&format!(
                 "{} --{}--> {} (kind {})\n  candidates: {}\n  constraints: {}\n",
                 a.requested_by,
@@ -128,6 +186,21 @@ impl ResolvedGraph {
             for (signal, funcs) in &a.pin_capabilities {
                 s.push_str(&format!("  {signal}: {}\n", funcs.join(" | ")));
             }
+        }
+        for binding in safety {
+            s.push_str(&format!(
+                "{} --safe_state--> {} = {}",
+                binding.component,
+                binding.resource.0,
+                binding.state.as_str()
+            ));
+            if let Some(timeout) = binding.heartbeat_timeout_us {
+                s.push_str(&format!(" (heartbeat {} us)", timeout));
+            }
+            if let Some(sensor) = &binding.sensor {
+                s.push_str(&format!(" (sensor {})", sensor.0));
+            }
+            s.push('\n');
         }
         Some(s)
     }
@@ -204,6 +277,84 @@ impl BusMatch {
         }));
         constraints
     }
+}
+
+/// Resolve the physical resources governed by a component's safety policy.
+/// Most components own resources directly; logical actuators such as a
+/// `stepper_motor` inherit the connector assigned to their declared driver.
+fn safety_target_resources(
+    resolved: &ResolvedGraph,
+    component_name: &str,
+    component: &Component,
+) -> Result<Vec<ResourceId>, String> {
+    let direct = resolved
+        .assignments
+        .get(component_name)
+        .filter(|assignments| !assignments.is_empty());
+    let assignments = match direct {
+        Some(assignments) => assignments,
+        None => {
+            let Some(driver) = component
+                .attributes
+                .get("driver")
+                .and_then(|value| value.as_str())
+            else {
+                return Ok(Vec::new());
+            };
+            let Some(assignments) = resolved
+                .assignments
+                .get(driver)
+                .filter(|assignments| !assignments.is_empty())
+            else {
+                return Ok(Vec::new());
+            };
+            if let Some(assignment) = assignments
+                .iter()
+                .find(|assignment| assignment.connector_kind != "stepper_driver_socket")
+            {
+                return Err(format!(
+                    "component '{component_name}' names '{driver}' as its driver, but '{}' is a '{}' connector rather than a stepper driver socket",
+                    assignment.resource.0, assignment.connector_kind
+                ));
+            }
+            assignments
+        }
+    };
+    let mut resources: Vec<ResourceId> = assignments
+        .iter()
+        .map(|assignment| assignment.resource.clone())
+        .collect();
+    resources.sort_by(|left, right| left.0.cmp(&right.0));
+    resources.dedup();
+    Ok(resources)
+}
+
+fn is_sensor_connector_kind(connector_kind: &str) -> bool {
+    matches!(connector_kind, "analog_input" | "digital_input")
+}
+
+fn sensor_resource_on_controller(
+    resolved: &ResolvedGraph,
+    component: &Component,
+    controller: &str,
+) -> Option<ResourceId> {
+    let sensor = component
+        .attributes
+        .get("sensor")
+        .and_then(|value| value.as_str())?;
+    resolved
+        .assignments
+        .get(sensor)?
+        .iter()
+        .filter(|assignment| is_sensor_connector_kind(&assignment.connector_kind))
+        .find_map(|assignment| {
+            assignment
+                .resource
+                .0
+                .split_once('.')
+                .filter(|(candidate, _)| *candidate == controller)
+                .map(|_| assignment.resource.clone())
+        })
 }
 
 fn expanded_source(sources: &BTreeMap<String, SourceSpan>, path: &str) -> Option<SourceSpan> {
@@ -541,6 +692,7 @@ fn resolve_doc(
     phases_run.push(Phase::PackageLoading);
     let mut boards: BTreeMap<String, BoardPackageFile> = BTreeMap::new();
     let mut chips: BTreeMap<String, dryer_package_model::chip::ChipPackageFile> = BTreeMap::new();
+    let mut chip_refs: BTreeMap<String, String> = BTreeMap::new();
     for (cname, ctrl) in &doc.controllers {
         let Some((ns, name)) = ctrl.board.split_once('/') else {
             diagnostics.push(
@@ -615,6 +767,7 @@ fn resolve_doc(
                                             }
                                         }
                                     }
+                                    chip_refs.insert(cname.clone(), chip_pkg.reference.to_string());
                                     chips.insert(cname.clone(), chip);
                                 }
                                 Err(errs) => diagnostics.extend(errs),
@@ -1336,11 +1489,11 @@ fn resolve_doc(
     // --- Phase 10: safety validation (coverage check) --------------------
     // The profile must exist as a safety-profile package, and every
     // component that resolved a hazardous output (a power_output connector)
-    // must belong to a class the profile covers (§18.2). Classes may add
-    // structural requirements (requires_sensor, §18.3). Compiling safe
-    // states into firmware artifacts is a later phase; this one guarantees
-    // no hazardous output escapes policy — the §30 "no unresolved safety
-    // defaults" gate.
+    // or delegates an actuator output to a driver must belong to a class the
+    // profile covers (§18.2). Delegated resources must be real driver sockets.
+    // Classes may add structural requirements (requires_sensor, §18.3). A
+    // required sensor must resolve through an input connector on the same
+    // controller so edge enforcement never depends on a host or link.
     phases_run.push(Phase::SafetyValidation);
     if !doc.safety.profile.contains('/') {
         diagnostics.push(
@@ -1355,7 +1508,7 @@ fn resolve_doc(
         );
         return fail(std::mem::take(diagnostics), phases_run.clone());
     }
-    match select(&doc.safety.profile) {
+    let safety_profile = match select(&doc.safety.profile) {
         None => {
             diagnostics.push(
                 Diagnostic::error(
@@ -1367,54 +1520,318 @@ fn resolve_doc(
                 )
                 .at("safety.profile"),
             );
+            None
         }
         Some(pkg) => match pkg.safety_profile_payload() {
-            Err(errs) => diagnostics.extend(errs),
-            Ok(profile) => {
-                for (cname, comp) in &doc.components {
-                    let hazardous = resolved
-                        .assignments
-                        .get(cname)
-                        .into_iter()
-                        .flatten()
-                        .any(|a| a.connector_kind == "power_output");
-                    let policy = profile.classes.get(&comp.kind);
-                    if hazardous && policy.is_none() {
-                        diagnostics.push(
-                            Diagnostic::error(
-                                "E1501",
-                                format!(
-                                    "component '{cname}' drives a power output but class '{}' has no policy in '{}'",
-                                    comp.kind, doc.safety.profile
-                                ),
-                            )
-                            .at(format!("components.{cname}"))
-                            .suggest(format!(
-                                "add a '{}' class to the safety profile or use a covered class",
-                                comp.kind
-                            )),
-                        );
-                    }
-                    if let Some(policy) = policy {
-                        if policy.requires_sensor && !comp.attributes.contains_key("sensor") {
-                            diagnostics.push(
-                                Diagnostic::error(
-                                    "E1502",
-                                    format!(
-                                        "class '{}' requires a sensor, but component '{cname}' declares none",
-                                        comp.kind
-                                    ),
-                                )
-                                .at(format!("components.{cname}"))
-                                .suggest("add 'sensor: <component>' referencing a sensor component"),
-                            );
-                        }
-                    }
+            Err(errs) => {
+                diagnostics.extend(errs);
+                None
+            }
+            Ok(profile) => Some(profile),
+        },
+    };
+    if let Some(profile) = &safety_profile {
+        for (cname, comp) in &expanded.components {
+            let hazardous = resolved
+                .assignments
+                .get(cname)
+                .into_iter()
+                .flatten()
+                .any(|assignment| assignment.connector_kind == "power_output");
+            let targets = match safety_target_resources(&resolved, cname, comp) {
+                Ok(targets) => targets,
+                Err(message) => {
+                    diagnostics.push(
+                        Diagnostic::error("E1506", message)
+                            .at(format!("components.{cname}.driver")),
+                    );
+                    continue;
+                }
+            };
+            let driver_backed = resolved.assignments.get(cname).map_or(true, Vec::is_empty)
+                && comp
+                    .attributes
+                    .get("driver")
+                    .and_then(|value| value.as_str())
+                    .is_some()
+                && !targets.is_empty();
+            let policy = profile.classes.get(&comp.kind);
+            if (hazardous || driver_backed) && policy.is_none() {
+                let output = if driver_backed {
+                    "delegates an actuator output to a driver"
+                } else {
+                    "drives a power output"
+                };
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1501",
+                        format!(
+                            "component '{cname}' {output} but class '{}' has no policy in '{}'",
+                            comp.kind, doc.safety.profile,
+                        ),
+                    )
+                    .at(format!("components.{cname}"))
+                    .suggest(format!(
+                        "add a '{}' class to the safety profile or use a covered class",
+                        comp.kind
+                    )),
+                );
+            }
+            let Some(policy) = policy else { continue };
+            if targets.is_empty() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1505",
+                        format!(
+                            "component '{cname}' has class '{}' safety policy but no concrete controller resource",
+                            comp.kind
+                        ),
+                    )
+                    .at(format!("components.{cname}")),
+                );
+                continue;
+            }
+            if !policy.requires_sensor {
+                continue;
+            }
+            let Some(sensor_name) = comp
+                .attributes
+                .get("sensor")
+                .and_then(|value| value.as_str())
+            else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1502",
+                        format!(
+                            "class '{}' requires a sensor, but component '{cname}' declares none",
+                            comp.kind
+                        ),
+                    )
+                    .at(format!("components.{cname}"))
+                    .suggest("add 'sensor: <component>' referencing a sensor component"),
+                );
+                continue;
+            };
+            let sensor_assignments = resolved.assignments.get(sensor_name);
+            if sensor_assignments.map_or(true, Vec::is_empty) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1503",
+                        format!(
+                            "component '{cname}' requires sensor '{sensor_name}', but that sensor has no resolved controller resource"
+                        ),
+                    )
+                    .at(format!("components.{cname}.sensor")),
+                );
+                continue;
+            }
+            if !sensor_assignments
+                .into_iter()
+                .flatten()
+                .any(|assignment| is_sensor_connector_kind(&assignment.connector_kind))
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1507",
+                        format!(
+                            "component '{cname}' requires sensor '{sensor_name}', but its resolved resource is not a sensor input"
+                        ),
+                    )
+                    .at(format!("components.{cname}.sensor")),
+                );
+                continue;
+            }
+            for target in targets {
+                let controller = target.0.split_once('.').map(|(name, _)| name);
+                if controller.is_some_and(|controller| {
+                    sensor_resource_on_controller(&resolved, comp, controller).is_none()
+                }) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "E1504",
+                            format!(
+                                "component '{cname}' and required sensor '{sensor_name}' must resolve on the same controller as '{}'",
+                                target.0
+                            ),
+                        )
+                        .at(format!("components.{cname}.sensor")),
+                    );
                 }
             }
-        },
+        }
     }
 
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return fail(std::mem::take(diagnostics), phases_run.clone());
+    }
+
+    // --- Phase 11: firmware partitioning --------------------------------
+    // Convert policy strings/quantities into concrete controller-local
+    // resources and integer controller time. `machine-lock` pins this
+    // projection and `firmware-build` wraps it in a versioned artifact.
+    phases_run.push(Phase::FirmwarePartitioning);
+    if let Some(profile) = safety_profile {
+        let mut safety_owners: BTreeMap<ResourceId, String> = BTreeMap::new();
+        for (cname, comp) in &expanded.components {
+            let Some(policy) = profile.classes.get(&comp.kind) else {
+                continue;
+            };
+            let Ok(resources) = safety_target_resources(&resolved, cname, comp) else {
+                continue;
+            };
+            for resource in resources {
+                let Some((controller, _)) = resource.0.split_once('.') else {
+                    continue;
+                };
+                if let Some(existing) = safety_owners.get(&resource) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "E1508",
+                            format!(
+                                "components '{existing}' and '{cname}' both define safety actions for physical resource '{}'",
+                                resource.0
+                            ),
+                        )
+                        .at(format!("components.{cname}")),
+                    );
+                    continue;
+                }
+                safety_owners.insert(resource.clone(), cname.clone());
+                let sensor = policy
+                    .requires_sensor
+                    .then(|| sensor_resource_on_controller(&resolved, comp, controller))
+                    .flatten();
+                resolved
+                    .controller_safety
+                    .entry(controller.to_string())
+                    .or_default()
+                    .push(ControllerSafeState {
+                        component: cname.clone(),
+                        class: comp.kind.clone(),
+                        resource,
+                        state: policy.safe_state,
+                        heartbeat_timeout_us: policy.heartbeat_timeout_us(),
+                        sensor,
+                    });
+            }
+        }
+        for bindings in resolved.controller_safety.values_mut() {
+            bindings.sort_by(|left, right| {
+                (&left.component, &left.resource.0).cmp(&(&right.component, &right.resource.0))
+            });
+        }
+    }
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return fail(std::mem::take(diagnostics), phases_run.clone());
+    }
+
+    // --- Phase 12: artifact planning ------------------------------------
+    // Select exact board/chip packages and compile target quantities before
+    // lock generation. Firmware-build consumes only this locked projection;
+    // it never guesses a target or rereads package metadata.
+    phases_run.push(Phase::ArtifactPlanning);
+    for (controller_name, controller) in &doc.controllers {
+        let Some(chip) = chips.get(controller_name) else {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E1600",
+                    format!(
+                        "controller '{controller_name}' has no resolved chip for firmware artifact planning"
+                    ),
+                )
+                .at(format!("controllers.{controller_name}.board")),
+            );
+            continue;
+        };
+        let (Some(memory), Some(boot), Some(firmware), Some(chip_reference)) = (
+            chip.memory.as_ref(),
+            chip.boot.as_ref(),
+            chip.firmware.as_ref(),
+            chip_refs.get(controller_name),
+        ) else {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E1600",
+                    format!(
+                        "controller '{controller_name}' chip package lacks memory, boot, or firmware target metadata"
+                    ),
+                )
+                .at(format!("controllers.{controller_name}.board")),
+            );
+            continue;
+        };
+        let (Some(flash_bytes), Some(ram_bytes)) = (memory.flash_bytes(), memory.ram_bytes())
+        else {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E1601",
+                    format!(
+                        "controller '{controller_name}' chip memory cannot compile to whole bytes"
+                    ),
+                )
+                .at(format!("controllers.{controller_name}.board")),
+            );
+            continue;
+        };
+        let Some(board_version) = chosen.get(&controller.board) else {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E1602",
+                    format!(
+                        "controller '{controller_name}' board '{}' has no exact selected version",
+                        controller.board
+                    ),
+                )
+                .at(format!("controllers.{controller_name}.board")),
+            );
+            continue;
+        };
+
+        let mut features = firmware.features.clone();
+        features.sort();
+        features.dedup();
+        let native_drivers: std::collections::BTreeSet<String> = doc
+            .components
+            .iter()
+            .filter(|(component_name, _)| {
+                resolved
+                    .assignments
+                    .get(*component_name)
+                    .into_iter()
+                    .flatten()
+                    .any(|assignment| {
+                        assignment
+                            .resource
+                            .0
+                            .split_once('.')
+                            .is_some_and(|(candidate, _)| candidate == controller_name)
+                    })
+            })
+            .filter_map(|(_, component)| {
+                device_reqs
+                    .get(&component.kind)
+                    .map(|requirement| requirement.reference.clone())
+            })
+            .collect();
+
+        resolved.controller_build_plans.insert(
+            controller_name.clone(),
+            ControllerBuildPlan {
+                board: format!("{}@{board_version}", controller.board),
+                chip: chip_reference.clone(),
+                target_triple: firmware.target_triple.clone(),
+                toolchain: firmware.toolchain.clone(),
+                build_profile: firmware.build_profile.clone(),
+                protocol_version: firmware.protocol_version.clone(),
+                abi_version: firmware.abi_version.clone(),
+                flash_bytes,
+                ram_bytes,
+                bootloader_offset_bytes: boot.default_bootloader_offset,
+                features,
+                native_drivers: native_drivers.into_iter().collect(),
+            },
+        );
+    }
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return fail(std::mem::take(diagnostics), phases_run.clone());
     }
@@ -1580,6 +1997,50 @@ mod tests {
         registry
     }
 
+    fn registry_with_safety_fixture(fixture: &str) -> LocalRegistry {
+        let mut registry = registry();
+        let package = registry
+            .packages
+            .iter_mut()
+            .find(|package| package.reference.to_string() == "safety-profiles/desktop-fdm@1.0.0")
+            .expect("desktop FDM safety profile");
+        package.dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(fixture);
+        registry
+    }
+
+    fn registry_without_firmware_target() -> (LocalRegistry, std::path::PathBuf) {
+        let mut registry = registry();
+        let package = registry
+            .packages
+            .iter_mut()
+            .find(|package| package.reference.to_string() == "chips/generic-mcu@1.5.0")
+            .expect("latest generic MCU package");
+        let source = std::fs::read_to_string(package.dir.join("package.yaml")).unwrap();
+        let metadata_start = source.find("\nmemory:\n").unwrap();
+        let peripherals_start = source
+            .find("\n# Synthetic certified-target budgets")
+            .unwrap();
+        let stripped = format!(
+            "{}{}",
+            &source[..metadata_start],
+            &source[peripherals_start..]
+        );
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temporary = std::env::temp_dir().join(format!(
+            "dryer-resolver-no-target-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temporary).unwrap();
+        std::fs::write(temporary.join("package.yaml"), stripped).unwrap();
+        package.dir = temporary.clone();
+        (registry, temporary)
+    }
+
     fn fixture() -> String {
         std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1592,8 +2053,8 @@ mod tests {
     fn the_fixture_machine_resolves_with_expected_assignments() {
         let o = resolve_source(&fixture(), &registry());
         assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
-        assert_eq!(o.phases_run.len(), 9, "all nine phases ran");
-        assert_eq!(*o.phases_run.last().unwrap(), Phase::SafetyValidation);
+        assert_eq!(o.phases_run.len(), 11, "all implemented phases ran");
+        assert_eq!(*o.phases_run.last().unwrap(), Phase::ArtifactPlanning);
         let g = o.resolved.unwrap();
         let x = &g.assignments["x_driver"][0];
         assert_eq!(x.resource.0, "mainboard.motor0");
@@ -2220,6 +2681,197 @@ mod tests {
             serde_json::to_string(&o.diagnostics).unwrap(),
             serde_json::to_string(&repeated.diagnostics).unwrap(),
             "multi-source conflict output must be byte-stable"
+        );
+    }
+
+    #[test]
+    fn safe_states_are_partitioned_to_concrete_controller_resources() {
+        let outcome = resolve_source(&fixture(), &registry());
+        assert!(outcome.is_ok(), "diagnostics: {:#?}", outcome.diagnostics);
+        assert_eq!(outcome.phases_run.last(), Some(&Phase::ArtifactPlanning));
+        let graph = outcome.resolved.unwrap();
+        let safety = &graph.controller_safety["mainboard"];
+        assert_eq!(safety.len(), 2, "{safety:#?}");
+
+        let heater = safety
+            .iter()
+            .find(|binding| binding.component == "hotend_heater")
+            .unwrap();
+        assert_eq!(heater.resource.0, "mainboard.heater0");
+        assert_eq!(heater.state, dryer_package_model::safety::SafeState::Off);
+        assert_eq!(heater.heartbeat_timeout_us, Some(500_000));
+        assert_eq!(
+            heater.sensor.as_ref().map(|resource| resource.0.as_str()),
+            Some("mainboard.thermistor0")
+        );
+
+        let motor = safety
+            .iter()
+            .find(|binding| binding.component == "x_motor")
+            .unwrap();
+        assert_eq!(motor.resource.0, "mainboard.motor0");
+        assert_eq!(
+            motor.state,
+            dryer_package_model::safety::SafeState::Disabled
+        );
+        assert!(graph
+            .explain("x_motor")
+            .unwrap()
+            .contains("safe_state--> mainboard.motor0 = disabled"));
+    }
+
+    #[test]
+    fn controller_build_inputs_are_planned_from_exact_target_packages() {
+        let outcome = resolve_source(&fixture(), &registry());
+        assert!(outcome.is_ok(), "diagnostics: {:#?}", outcome.diagnostics);
+        let graph = outcome.resolved.unwrap();
+        let plan = &graph.controller_build_plans["mainboard"];
+        assert_eq!(plan.board, "boards/example-mainboard@1.0.0");
+        assert_eq!(plan.chip, "chips/generic-mcu@1.5.0");
+        assert_eq!(plan.target_triple, "thumbv7em-none-eabihf");
+        assert_eq!(plan.toolchain, "rustc-1.85.0");
+        assert_eq!(plan.build_profile, "release");
+        assert_eq!(plan.protocol_version, "dryer.control/v1");
+        assert_eq!(plan.abi_version, "dryer.controller/v1");
+        assert_eq!(plan.flash_bytes, 524_288);
+        assert_eq!(plan.ram_bytes, 131_072);
+        assert_eq!(plan.bootloader_offset_bytes, 16_384);
+        assert_eq!(
+            plan.features,
+            ["adc", "pwm", "step_scheduler", "usb_transport"]
+        );
+        assert_eq!(plan.native_drivers, ["devices/tmc2209@2.1.0"]);
+    }
+
+    #[test]
+    fn artifact_planning_rejects_a_chip_without_firmware_target_metadata() {
+        let (registry, temporary) = registry_without_firmware_target();
+        let outcome = resolve_source(&fixture(), &registry);
+        std::fs::remove_dir_all(temporary).unwrap();
+        assert!(!outcome.is_ok());
+        assert_eq!(outcome.phases_run.last(), Some(&Phase::ArtifactPlanning));
+        let diagnostic = outcome
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "E1600")
+            .unwrap();
+        assert!(
+            diagnostic.message.contains("memory, boot, or firmware"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn an_unresolved_required_sensor_cannot_enter_controller_firmware() {
+        let bad = fixture().replace("    input: mainboard.thermistor0\n", "");
+        assert_ne!(bad, fixture(), "replacement must apply");
+        let outcome = resolve_source(&bad, &registry());
+        assert!(!outcome.is_ok());
+        let diagnostic = outcome
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "E1503")
+            .unwrap();
+        assert!(
+            diagnostic.message.contains("hotend_sensor"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn a_driver_backed_actuator_requires_profile_coverage() {
+        let outcome = resolve_source(
+            &fixture(),
+            &registry_with_safety_fixture("safety-no-stepper"),
+        );
+        assert!(!outcome.is_ok());
+        let diagnostic = outcome
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "E1501")
+            .unwrap();
+        assert!(
+            diagnostic.message.contains("x_motor") && diagnostic.message.contains("stepper_motor"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn an_actuator_driver_must_resolve_to_a_driver_socket() {
+        let bad = fixture().replace("    driver: x_driver\n", "    driver: hotend_sensor\n");
+        assert_ne!(bad, fixture(), "replacement must apply");
+        let outcome = resolve_source(&bad, &registry());
+        assert!(!outcome.is_ok());
+        let diagnostic = outcome
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "E1506")
+            .unwrap();
+        assert!(
+            diagnostic.message.contains("thermistor0")
+                && diagnostic.message.contains("analog_input"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn a_required_sensor_must_resolve_to_an_input_connector() {
+        let bad = fixture().replace("    sensor: hotend_sensor\n", "    sensor: x_driver\n");
+        assert_ne!(bad, fixture(), "replacement must apply");
+        let outcome = resolve_source(&bad, &registry());
+        assert!(!outcome.is_ok());
+        let diagnostic = outcome
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "E1507")
+            .unwrap();
+        assert!(
+            diagnostic.message.contains("x_driver"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn one_physical_resource_cannot_receive_two_safety_actions() {
+        let outcome = resolve_source(
+            &fixture(),
+            &registry_with_safety_fixture("safety-driver-conflict"),
+        );
+        assert!(!outcome.is_ok());
+        let diagnostic = outcome
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "E1508")
+            .unwrap();
+        assert!(
+            diagnostic.message.contains("x_motor")
+                && diagnostic.message.contains("x_driver")
+                && diagnostic.message.contains("mainboard.motor0"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn a_safe_actuator_without_a_controller_resource_is_rejected() {
+        let bad = fixture().replace("    driver: x_driver\n", "");
+        assert_ne!(bad, fixture(), "replacement must apply");
+        let outcome = resolve_source(&bad, &registry());
+        assert!(!outcome.is_ok());
+        let diagnostic = outcome
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "E1505")
+            .unwrap();
+        assert!(
+            diagnostic.message.contains("x_motor"),
+            "{}",
+            diagnostic.message
         );
     }
 

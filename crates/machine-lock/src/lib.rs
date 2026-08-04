@@ -1,12 +1,12 @@
 //! `machine.lock` (spec §12, §29 step 7): a generated, canonical, hashed
 //! capture of one successful resolution.
 //!
-//! v0.2 field scope, stated honestly: exact package versions + portable
+//! v0.4 field scope, stated honestly: exact package versions + portable
 //! full-content digests (§6.6), manifest hashes, the machine-source hash,
 //! resolver identity, the pinned safety profile, and per-controller resolved
-//! resources. Deferred to later slices (each needs machinery that does not
-//! exist yet): registry source identity, firmware target triples and build
-//! profiles, protocol versions, and feature flags.
+//! resources plus compiled controller safety and firmware build inputs.
+//! Registry source identity and expected reproducible output hashes remain
+//! deferred.
 //!
 //! Canonical form: JSON with every map a `BTreeMap`, so byte-identical
 //! lockfiles for identical inputs. The on-disk file is YAML for humans;
@@ -19,7 +19,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-pub const LOCK_VERSION: u32 = 2;
+pub const LOCK_VERSION: u32 = 4;
+pub const CONTROLLER_SAFETY_SCHEMA: &str = "dryer.controller-safety/v1";
+pub const CONTROLLER_BUILD_SCHEMA: &str = "dryer.controller-build-plan/v1";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lockfile {
@@ -35,7 +37,7 @@ pub struct Lockfile {
     pub controllers: BTreeMap<String, LockedController>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockedPackage {
     /// `namespace/name@version`.
     pub id: String,
@@ -53,6 +55,49 @@ pub struct LockedController {
     pub board: String,
     /// `component/via` → connector id on this controller.
     pub resolved_resources: BTreeMap<String, String>,
+    /// Present and required in lockfile v3+; absent in legacy v1/v2 locks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety: Option<LockedSafetyConfig>,
+    /// Present and required in lockfile v4+; absent in legacy v1-v3 locks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<LockedBuildConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockedBuildConfig {
+    pub schema: String,
+    pub board: String,
+    pub chip: String,
+    pub target_triple: String,
+    pub toolchain: String,
+    pub build_profile: String,
+    pub protocol_version: String,
+    pub abi_version: String,
+    pub flash_bytes: u64,
+    pub ram_bytes: u64,
+    pub bootloader_offset_bytes: u64,
+    pub features: Vec<String>,
+    pub native_drivers: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockedSafetyConfig {
+    pub schema: String,
+    pub states: Vec<LockedSafeState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockedSafeState {
+    pub component: String,
+    pub class: String,
+    /// Controller-local connector/resource id.
+    pub resource: String,
+    pub state: dryer_package_model::safety::SafeState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heartbeat_timeout_us: Option<u64>,
+    /// Controller-local sensor resource when required by policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sensor: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -175,6 +220,11 @@ pub fn lock(
                 LockedController {
                     board: c.board.clone(),
                     resolved_resources: BTreeMap::new(),
+                    safety: Some(LockedSafetyConfig {
+                        schema: CONTROLLER_SAFETY_SCHEMA.to_string(),
+                        states: Vec::new(),
+                    }),
+                    build: None,
                 },
             )
         })
@@ -195,6 +245,94 @@ pub fn lock(
             }
         }
     }
+    for (controller_name, bindings) in &resolved.controller_safety {
+        let Some(controller) = controllers.get_mut(controller_name) else {
+            return Err(vec![Diagnostic::error(
+                "E1403",
+                format!(
+                    "resolved safety configuration names unknown controller '{controller_name}'"
+                ),
+            )]);
+        };
+        let states = &mut controller
+            .safety
+            .as_mut()
+            .expect("v3 lock construction initializes safety")
+            .states;
+        for binding in bindings {
+            let Some((resource_controller, resource)) = binding.resource.0.split_once('.') else {
+                return Err(vec![Diagnostic::error(
+                    "E1403",
+                    format!(
+                        "safety resource '{}' is not 'controller.resource'",
+                        binding.resource.0
+                    ),
+                )]);
+            };
+            if resource_controller != controller_name {
+                return Err(vec![Diagnostic::error(
+                    "E1403",
+                    format!(
+                        "safety resource '{}' belongs to controller '{resource_controller}', not '{controller_name}'",
+                        binding.resource.0,
+                    ),
+                )]);
+            }
+            let sensor = binding
+                .sensor
+                .as_ref()
+                .map(|sensor| {
+                    sensor
+                        .0
+                        .strip_prefix(&format!("{controller_name}."))
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            vec![Diagnostic::error(
+                                "E1403",
+                                format!(
+                                    "safety sensor '{}' is not local to controller '{controller_name}'",
+                                    sensor.0
+                                ),
+                            )]
+                        })
+                })
+                .transpose()?;
+            states.push(LockedSafeState {
+                component: binding.component.clone(),
+                class: binding.class.clone(),
+                resource: resource.to_string(),
+                state: binding.state,
+                heartbeat_timeout_us: binding.heartbeat_timeout_us,
+                sensor,
+            });
+        }
+        states.sort_by(|left, right| {
+            (&left.component, &left.resource).cmp(&(&right.component, &right.resource))
+        });
+    }
+    for (controller_name, plan) in &resolved.controller_build_plans {
+        let Some(controller) = controllers.get_mut(controller_name) else {
+            return Err(vec![Diagnostic::error(
+                "E1404",
+                format!("resolved build plan names unknown controller '{controller_name}'"),
+            )]);
+        };
+        controller.build = Some(LockedBuildConfig {
+            schema: CONTROLLER_BUILD_SCHEMA.to_string(),
+            board: plan.board.clone(),
+            chip: plan.chip.clone(),
+            target_triple: plan.target_triple.clone(),
+            toolchain: plan.toolchain.clone(),
+            build_profile: plan.build_profile.clone(),
+            protocol_version: plan.protocol_version.clone(),
+            abi_version: plan.abi_version.clone(),
+            flash_bytes: plan.flash_bytes,
+            ram_bytes: plan.ram_bytes,
+            bootloader_offset_bytes: plan.bootloader_offset_bytes,
+            features: plan.features.clone(),
+            native_drivers: plan.native_drivers.clone(),
+        });
+    }
 
     // The safety profile is part of the closure; surface it as its own
     // field too (§12 pins it visibly), at the closure-selected version.
@@ -213,18 +351,26 @@ pub fn lock(
             )]
         })?;
 
-    Ok(Lockfile {
+    let lockfile = Lockfile {
         lock_version: LOCK_VERSION,
         machine_hash: sha256_hex(source.as_bytes()),
         resolver_version: env!("CARGO_PKG_VERSION").to_string(),
         packages,
         safety_profile,
         controllers,
-    })
+    };
+    lockfile.validate().map_err(|error| {
+        vec![Diagnostic::error(
+            "E1405",
+            format!("generated lockfile violates its v{LOCK_VERSION} contract: {error}"),
+        )]
+    })?;
+    Ok(lockfile)
 }
 
 impl Lockfile {
-    fn validate(&self) -> Result<(), String> {
+    /// Validate version-specific invariants before downstream artifact work.
+    pub fn validate(&self) -> Result<(), String> {
         if self.lock_version >= 2 {
             for (index, package) in self.packages.iter().enumerate() {
                 if package.content_hash.is_empty() {
@@ -241,27 +387,215 @@ impl Lockfile {
                 ));
             }
         }
+        if self.lock_version >= 3 {
+            for (name, controller) in &self.controllers {
+                let safety = controller.safety.as_ref().ok_or_else(|| {
+                    format!(
+                        "lockfile v{} controller '{name}' has no compiled safety configuration",
+                        self.lock_version
+                    )
+                })?;
+                if safety.schema != CONTROLLER_SAFETY_SCHEMA {
+                    return Err(format!(
+                        "lockfile v{} controller '{name}' safety schema '{}' is not '{}'",
+                        self.lock_version, safety.schema, CONTROLLER_SAFETY_SCHEMA
+                    ));
+                }
+                let resources: std::collections::BTreeSet<&str> = controller
+                    .resolved_resources
+                    .values()
+                    .map(String::as_str)
+                    .collect();
+                let mut resources_with_safety = std::collections::BTreeSet::new();
+                for state in &safety.states {
+                    if state.component.trim().is_empty()
+                        || state.component.trim() != state.component
+                        || state.class.trim().is_empty()
+                        || state.class.trim() != state.class
+                    {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' has an empty or padded safety component/class",
+                            self.lock_version
+                        ));
+                    }
+                    if !resources_with_safety.insert(state.resource.as_str()) {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' repeats safety state for physical resource '{}'",
+                            self.lock_version, state.resource
+                        ));
+                    }
+                    if !resources.contains(state.resource.as_str()) {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' safety resource '{}' is not resolved",
+                            self.lock_version, state.resource
+                        ));
+                    }
+                    if state
+                        .sensor
+                        .as_deref()
+                        .is_some_and(|sensor| !resources.contains(sensor))
+                    {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' safety sensor '{}' is not resolved",
+                            self.lock_version,
+                            state.sensor.as_deref().unwrap_or_default()
+                        ));
+                    }
+                    if state.heartbeat_timeout_us == Some(0) {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' safety heartbeat timeout must be positive",
+                            self.lock_version
+                        ));
+                    }
+                }
+            }
+        }
+        if self.lock_version >= 4 {
+            let packages: std::collections::BTreeSet<&str> = self
+                .packages
+                .iter()
+                .map(|package| package.id.as_str())
+                .collect();
+            for (name, controller) in &self.controllers {
+                let build = controller.build.as_ref().ok_or_else(|| {
+                    format!(
+                        "lockfile v{} controller '{name}' has no compiled build configuration",
+                        self.lock_version
+                    )
+                })?;
+                if build.schema != CONTROLLER_BUILD_SCHEMA {
+                    return Err(format!(
+                        "lockfile v{} controller '{name}' build schema '{}' is not '{}'",
+                        self.lock_version, build.schema, CONTROLLER_BUILD_SCHEMA
+                    ));
+                }
+                if !build
+                    .board
+                    .strip_prefix(&controller.board)
+                    .is_some_and(|suffix| suffix.starts_with('@'))
+                {
+                    return Err(format!(
+                        "lockfile v{} controller '{name}' build board '{}' does not pin '{}'",
+                        self.lock_version, build.board, controller.board
+                    ));
+                }
+                for package in std::iter::once(build.board.as_str())
+                    .chain(std::iter::once(build.chip.as_str()))
+                    .chain(build.native_drivers.iter().map(String::as_str))
+                {
+                    if !packages.contains(package) {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' build input '{package}' is not in packages",
+                            self.lock_version
+                        ));
+                    }
+                }
+                for (field, value) in [
+                    ("target_triple", build.target_triple.as_str()),
+                    ("toolchain", build.toolchain.as_str()),
+                    ("build_profile", build.build_profile.as_str()),
+                    ("protocol_version", build.protocol_version.as_str()),
+                    ("abi_version", build.abi_version.as_str()),
+                ] {
+                    if value.is_empty() || value.trim() != value {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' build {field} is empty or padded",
+                            self.lock_version
+                        ));
+                    }
+                }
+                for (field, value) in [
+                    ("protocol_version", build.protocol_version.as_str()),
+                    ("abi_version", build.abi_version.as_str()),
+                ] {
+                    if !versioned_interface(value) {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' build {field} is not a versioned interface",
+                            self.lock_version
+                        ));
+                    }
+                }
+                if build.flash_bytes == 0
+                    || build.ram_bytes == 0
+                    || build.bootloader_offset_bytes >= build.flash_bytes
+                {
+                    return Err(format!(
+                        "lockfile v{} controller '{name}' has invalid build memory layout",
+                        self.lock_version
+                    ));
+                }
+                for (field, values) in [
+                    ("features", &build.features),
+                    ("native_drivers", &build.native_drivers),
+                ] {
+                    if values.windows(2).any(|pair| pair[0] >= pair[1]) {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' build {field} must be sorted and unique",
+                            self.lock_version
+                        ));
+                    }
+                }
+                if build
+                    .features
+                    .iter()
+                    .any(|feature| !dryer_machine_schema::valid_identifier(feature))
+                {
+                    return Err(format!(
+                        "lockfile v{} controller '{name}' build features contain an invalid identifier",
+                        self.lock_version
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
     /// Canonical bytes: deterministic JSON. The hash of a lockfile is the
     /// hash of these bytes regardless of how the YAML file was formatted.
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("lockfile serializes")
+    pub fn try_canonical_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        serde_json::to_vec(self)
     }
 
+    /// Infallible convenience wrapper for already validated lockfiles.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        self.try_canonical_bytes().expect("lockfile serializes")
+    }
+
+    /// Fallible lock hash for callers handling untrusted or mutated lock data.
+    pub fn try_lock_hash(&self) -> Result<String, serde_json::Error> {
+        self.try_canonical_bytes().map(|bytes| sha256_hex(&bytes))
+    }
+
+    /// Infallible convenience wrapper for already validated lockfiles.
     pub fn lock_hash(&self) -> String {
-        sha256_hex(&self.canonical_bytes())
+        self.try_lock_hash().expect("lockfile serializes")
     }
 
     /// The human-facing on-disk form (`machine.lock`).
+    pub fn try_to_yaml(&self) -> Result<String, serde_yaml::Error> {
+        serde_yaml::to_string(self)
+    }
+
+    /// Infallible convenience wrapper for already validated lockfiles.
     pub fn to_yaml(&self) -> String {
-        serde_yaml::to_string(self).expect("lockfile serializes")
+        self.try_to_yaml().expect("lockfile serializes")
     }
 
     pub fn from_yaml(text: &str) -> Result<Self, serde_yaml::Error> {
         serde_yaml::from_str(text)
     }
+}
+
+fn versioned_interface(value: &str) -> bool {
+    value.split_once("/v").is_some_and(|(name, version)| {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|character| character.is_ascii_lowercase() || character == '.')
+            && matches!(version.as_bytes().first(), Some(b'1'..=b'9'))
+            && version.bytes().all(|digit| digit.is_ascii_digit())
+            && version.parse::<u32>().is_ok()
+    })
 }
 
 #[cfg(test)]
@@ -304,6 +638,25 @@ mod tests {
         let main = &l.controllers["mainboard"];
         assert_eq!(main.resolved_resources["x_driver/connected_to"], "motor0");
         assert_eq!(main.resolved_resources["hotend_heater/output"], "heater0");
+        let safety = main.safety.as_ref().expect("v3 safety config");
+        assert_eq!(safety.schema, CONTROLLER_SAFETY_SCHEMA);
+        assert_eq!(safety.states.len(), 2, "{:?}", safety.states);
+        let heater = safety
+            .states
+            .iter()
+            .find(|state| state.component == "hotend_heater")
+            .unwrap();
+        assert_eq!(heater.resource, "heater0");
+        assert_eq!(heater.sensor.as_deref(), Some("thermistor0"));
+        assert_eq!(heater.heartbeat_timeout_us, Some(500_000));
+        let build = main.build.as_ref().expect("v4 build config");
+        assert_eq!(build.schema, CONTROLLER_BUILD_SCHEMA);
+        assert_eq!(build.board, "boards/example-mainboard@1.0.0");
+        assert_eq!(build.chip, "chips/generic-mcu@1.5.0");
+        assert_eq!(build.target_triple, "thumbv7em-none-eabihf");
+        assert_eq!(build.flash_bytes, 524_288);
+        assert_eq!(build.bootloader_offset_bytes, 16_384);
+        assert_eq!(build.native_drivers, ["devices/tmc2209@2.1.0"]);
         // the full closure: 3 explicit pins + the transitive chip
         // dependency + the implicit safety profile
         assert_eq!(l.packages.len(), 5, "{:?}", l.packages);
@@ -345,20 +698,66 @@ mod tests {
         let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
             .resolved
             .unwrap();
-        let current = lock(&source, &registry, &resolved).unwrap().to_yaml();
-        let legacy = current
-            .replace("lock_version: 2", "lock_version: 1")
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("content_hash:"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let parsed = Lockfile::from_yaml(&legacy).unwrap();
+        let mut legacy = lock(&source, &registry, &resolved).unwrap();
+        legacy.lock_version = 1;
+        for package in &mut legacy.packages {
+            package.content_hash.clear();
+        }
+        legacy.safety_profile.content_hash.clear();
+        for controller in legacy.controllers.values_mut() {
+            controller.safety = None;
+            controller.build = None;
+        }
+        let parsed = Lockfile::from_yaml(&legacy.to_yaml()).unwrap();
         assert_eq!(parsed.lock_version, 1);
         assert!(parsed
             .packages
             .iter()
             .all(|package| package.content_hash.is_empty()));
         assert!(parsed.safety_profile.content_hash.is_empty());
+        assert!(parsed
+            .controllers
+            .values()
+            .all(|controller| controller.safety.is_none()));
+    }
+
+    #[test]
+    fn legacy_v2_locks_without_compiled_safety_still_parse() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let mut legacy = lock(&source, &registry, &resolved).unwrap();
+        legacy.lock_version = 2;
+        for controller in legacy.controllers.values_mut() {
+            controller.safety = None;
+            controller.build = None;
+        }
+        let parsed = Lockfile::from_yaml(&legacy.to_yaml()).unwrap();
+        assert_eq!(parsed.lock_version, 2);
+        assert!(parsed
+            .controllers
+            .values()
+            .all(|controller| controller.safety.is_none()));
+    }
+
+    #[test]
+    fn legacy_v3_locks_without_compiled_build_inputs_still_parse() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let mut legacy = lock(&source, &registry, &resolved).unwrap();
+        legacy.lock_version = 3;
+        for controller in legacy.controllers.values_mut() {
+            controller.build = None;
+        }
+        let parsed = Lockfile::from_yaml(&legacy.to_yaml()).unwrap();
+        assert_eq!(parsed.lock_version, 3);
+        assert!(parsed
+            .controllers
+            .values()
+            .all(|controller| controller.safety.is_some() && controller.build.is_none()));
     }
 
     #[test]
@@ -389,5 +788,170 @@ mod tests {
         missing_safety_hash.safety_profile.content_hash.clear();
         let error = serde_yaml::to_string(&missing_safety_hash).unwrap_err();
         assert!(error.to_string().contains("has no content_hash"), "{error}");
+    }
+
+    #[test]
+    fn v3_locks_require_compiled_controller_safety_at_both_boundaries() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let valid = lock(&source, &registry, &resolved).unwrap();
+        let mut missing = valid.clone();
+        missing.controllers.get_mut("mainboard").unwrap().safety = None;
+        let error = serde_yaml::to_string(&missing).unwrap_err();
+        assert!(
+            error.to_string().contains("compiled safety configuration"),
+            "{error}"
+        );
+
+        let mut malformed = valid.clone();
+        malformed
+            .controllers
+            .get_mut("mainboard")
+            .unwrap()
+            .safety
+            .as_mut()
+            .unwrap()
+            .states[0]
+            .component = " padded".to_string();
+        for error in [
+            malformed.try_canonical_bytes().unwrap_err().to_string(),
+            malformed.try_lock_hash().unwrap_err().to_string(),
+            malformed.try_to_yaml().unwrap_err().to_string(),
+        ] {
+            assert!(error.contains("empty or padded"), "{error}");
+        }
+
+        let yaml = valid.to_yaml();
+        let safety_start = yaml.find("    safety:\n").unwrap();
+        let truncated = yaml[..safety_start].to_string();
+        let error = Lockfile::from_yaml(&truncated).unwrap_err();
+        assert!(
+            error.to_string().contains("compiled safety configuration"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn v3_locks_reject_multiple_actions_for_one_physical_resource() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let mut duplicate = lock(&source, &registry, &resolved).unwrap();
+        let safety = duplicate
+            .controllers
+            .get_mut("mainboard")
+            .unwrap()
+            .safety
+            .as_mut()
+            .unwrap();
+        let mut second_owner = safety
+            .states
+            .iter()
+            .find(|state| state.resource == "motor0")
+            .unwrap()
+            .clone();
+        second_owner.component = "x_driver".to_string();
+        second_owner.class = "tmc2209".to_string();
+        second_owner.state = dryer_package_model::safety::SafeState::Off;
+        safety.states.push(second_owner);
+
+        let error = serde_yaml::to_string(&duplicate).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("repeats safety state for physical resource 'motor0'"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn v4_locks_require_valid_compiled_build_inputs() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let valid = lock(&source, &registry, &resolved).unwrap();
+
+        let mut missing = valid.clone();
+        missing.controllers.get_mut("mainboard").unwrap().build = None;
+        let error = serde_yaml::to_string(&missing).unwrap_err();
+        assert!(
+            error.to_string().contains("compiled build configuration"),
+            "{error}"
+        );
+
+        let mut invalid_memory = valid;
+        invalid_memory
+            .controllers
+            .get_mut("mainboard")
+            .unwrap()
+            .build
+            .as_mut()
+            .unwrap()
+            .bootloader_offset_bytes = 524_288;
+        let error = serde_yaml::to_string(&invalid_memory).unwrap_err();
+        assert!(
+            error.to_string().contains("invalid build memory"),
+            "{error}"
+        );
+
+        let mut invalid_interface = lock(&source, &registry, &resolved).unwrap();
+        invalid_interface
+            .controllers
+            .get_mut("mainboard")
+            .unwrap()
+            .build
+            .as_mut()
+            .unwrap()
+            .protocol_version = "dryer.control/v01".to_string();
+        let error = serde_yaml::to_string(&invalid_interface).unwrap_err();
+        assert!(error.to_string().contains("versioned interface"), "{error}");
+
+        let mut invalid_feature = lock(&source, &registry, &resolved).unwrap();
+        invalid_feature
+            .controllers
+            .get_mut("mainboard")
+            .unwrap()
+            .build
+            .as_mut()
+            .unwrap()
+            .features = vec!["not valid".to_string()];
+        let error = serde_yaml::to_string(&invalid_feature).unwrap_err();
+        assert!(error.to_string().contains("invalid identifier"), "{error}");
+    }
+
+    #[test]
+    fn lock_creation_rejects_a_missing_controller_build_plan() {
+        let (source, registry) = setup();
+        let mut resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        resolved.controller_build_plans.clear();
+
+        let diagnostics = lock(&source, &registry, &resolved).unwrap_err();
+        assert_eq!(diagnostics[0].code, "E1405");
+        assert!(diagnostics[0]
+            .message
+            .contains("no compiled build configuration"));
+    }
+
+    #[test]
+    fn lock_creation_reports_the_actual_safety_resource_controller() {
+        let (source, registry) = setup();
+        let mut resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        resolved.controller_safety.get_mut("mainboard").unwrap()[0]
+            .resource
+            .0 = "toolboard.heater0".to_string();
+
+        let diagnostics = lock(&source, &registry, &resolved).unwrap_err();
+        assert_eq!(diagnostics[0].code, "E1403");
+        assert!(diagnostics[0]
+            .message
+            .contains("belongs to controller 'toolboard', not 'mainboard'"));
     }
 }

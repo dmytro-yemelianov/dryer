@@ -4,9 +4,6 @@ package:
   version: 1.0.0
   kind: safety-profile
 
-# Per component-class safety policy (spec §18.2). A machine using this
-# profile must cover every hazardous output with one of these classes;
-# safe states are compiled into controller-local artifacts after resolution.
 classes:
   heater:
     safe_state: "off"
@@ -18,3 +15,6 @@ classes:
 
   stepper_motor:
     safe_state: disabled
+
+  tmc2209:
+    safe_state: "off"

@@ -12,6 +12,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+dryer-firmware-build = { path = "../firmware-build" }
+dryer-machine-lock = { path = "../machine-lock" }
 dryer-machine-parser = { path = "../machine-parser" }
 dryer-machine-resolver = { path = "../machine-resolver" }
 dryer-package-model = { path = "../package-model" }
