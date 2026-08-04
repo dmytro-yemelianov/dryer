@@ -54,15 +54,19 @@ impl ClassPolicy {
     pub fn heartbeat_timeout_us(&self) -> Option<u64> {
         self.heartbeat_timeout.as_deref().and_then(|raw| {
             let quantity = Quantity::parse_as(raw, Dimension::Time).ok()?;
-            let micros = quantity.value * 1_000_000.0;
-            let rounded = micros.round();
-            (quantity.value > 0.0
-                && rounded >= 1.0
-                && rounded <= u64::MAX as f64
-                && (micros - rounded).abs() <= 1e-6)
-                .then_some(rounded as u64)
+            quantize_timeout_micros(&quantity)
         })
     }
+}
+
+fn quantize_timeout_micros(quantity: &Quantity) -> Option<u64> {
+    let micros = quantity.value * 1_000_000.0;
+    let rounded = micros.round();
+    (quantity.value > 0.0
+        && rounded >= 1.0
+        && rounded <= u64::MAX as f64
+        && (micros - rounded).abs() <= 1e-6)
+        .then_some(rounded as u64)
 }
 
 impl crate::LoadedPackage {
@@ -106,22 +110,16 @@ impl crate::LoadedPackage {
                             ),
                         ));
                     }
-                    Ok(quantity) => {
-                        let micros = quantity.value * 1_000_000.0;
-                        let rounded = micros.round();
-                        if rounded < 1.0
-                            || rounded > u64::MAX as f64
-                            || (micros - rounded).abs() > 1e-6
-                        {
-                            diags.push(Diagnostic::error(
-                                "E0635",
-                                format!(
-                                    "{}: class '{class}' heartbeat_timeout must fit the 1 us controller time quantum",
-                                    self.reference
-                                ),
-                            ));
-                        }
+                    Ok(quantity) if quantize_timeout_micros(&quantity).is_none() => {
+                        diags.push(Diagnostic::error(
+                            "E0635",
+                            format!(
+                                "{}: class '{class}' heartbeat_timeout must fit the 1 us controller time quantum",
+                                self.reference
+                            ),
+                        ));
                     }
+                    Ok(_) => {}
                 }
             }
         }

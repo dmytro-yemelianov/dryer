@@ -11,7 +11,7 @@ use dryer_machine_lock::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 
 pub const MINIMUM_LOCK_VERSION: u32 = 3;
@@ -130,6 +130,12 @@ impl fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
+fn sort_safety_states(states: &mut [LockedSafeState]) {
+    states.sort_by(|left, right| {
+        (&left.component, &left.resource).cmp(&(&right.component, &right.resource))
+    });
+}
+
 /// Compile one controller's locked safety projection into the artifact ABI.
 pub fn compile_controller(
     lock: &Lockfile,
@@ -147,61 +153,8 @@ pub fn compile_controller(
         .safety
         .as_ref()
         .ok_or_else(|| BuildError::MissingSafetyConfig(controller_name.to_string()))?;
-    if safety.schema != CONTROLLER_SAFETY_SCHEMA {
-        return Err(BuildError::InvalidSafetyConfig(format!(
-            "controller '{controller_name}' uses schema '{}' instead of '{}'",
-            safety.schema, CONTROLLER_SAFETY_SCHEMA
-        )));
-    }
-
-    let resources: BTreeSet<&str> = controller
-        .resolved_resources
-        .values()
-        .map(String::as_str)
-        .collect();
     let mut states = safety.states.clone();
-    states.sort_by(|left, right| {
-        (&left.component, &left.resource).cmp(&(&right.component, &right.resource))
-    });
-    let mut resources_with_safety = BTreeSet::new();
-    for state in &states {
-        if state.component.trim().is_empty()
-            || state.component.trim() != state.component
-            || state.class.trim().is_empty()
-            || state.class.trim() != state.class
-        {
-            return Err(BuildError::InvalidSafetyConfig(format!(
-                "controller '{controller_name}' has an empty or padded component/class"
-            )));
-        }
-        if !resources.contains(state.resource.as_str()) {
-            return Err(BuildError::InvalidSafetyConfig(format!(
-                "controller '{controller_name}' resource '{}' is not in resolved_resources",
-                state.resource
-            )));
-        }
-        if state
-            .sensor
-            .as_deref()
-            .is_some_and(|sensor| !resources.contains(sensor))
-        {
-            return Err(BuildError::InvalidSafetyConfig(format!(
-                "controller '{controller_name}' sensor '{}' is not in resolved_resources",
-                state.sensor.as_deref().unwrap_or_default()
-            )));
-        }
-        if state.heartbeat_timeout_us == Some(0) {
-            return Err(BuildError::InvalidSafetyConfig(format!(
-                "controller '{controller_name}' has a zero heartbeat timeout"
-            )));
-        }
-        if !resources_with_safety.insert(state.resource.as_str()) {
-            return Err(BuildError::InvalidSafetyConfig(format!(
-                "controller '{controller_name}' repeats physical resource '{}'",
-                state.resource
-            )));
-        }
-    }
+    sort_safety_states(&mut states);
 
     Ok(ControllerSafetyArtifact {
         schema: CONTROLLER_SAFETY_SCHEMA.to_string(),
@@ -244,10 +197,12 @@ pub fn plan_controller(
         .build
         .as_ref()
         .ok_or_else(|| BuildError::MissingBuildConfig(controller_name.to_string()))?;
-    let safety = controller
+    let mut safety = controller
         .safety
         .as_ref()
-        .ok_or_else(|| BuildError::MissingSafetyConfig(controller_name.to_string()))?;
+        .ok_or_else(|| BuildError::MissingSafetyConfig(controller_name.to_string()))?
+        .clone();
+    sort_safety_states(&mut safety.states);
 
     Ok(ControllerBuildPlanArtifact {
         schema: CONTROLLER_BUILD_SCHEMA.to_string(),
@@ -266,7 +221,7 @@ pub fn plan_controller(
         features: build.features.clone(),
         native_drivers: build.native_drivers.clone(),
         resolved_resources: controller.resolved_resources.clone(),
-        safety: safety.clone(),
+        safety,
     })
 }
 
@@ -351,6 +306,22 @@ mod tests {
         assert_eq!(first.flash_bytes, 524_288);
         assert_eq!(first.safety.states.len(), 2);
         assert_eq!(first.native_drivers, ["devices/tmc2209@2.1.0"]);
+
+        let mut reordered = lock;
+        reordered
+            .controllers
+            .get_mut("mainboard")
+            .unwrap()
+            .safety
+            .as_mut()
+            .unwrap()
+            .states
+            .reverse();
+        let reordered = plan_controller(&reordered, "mainboard").unwrap();
+        assert!(reordered.safety.states.windows(2).all(|states| {
+            (&states[0].component, &states[0].resource)
+                < (&states[1].component, &states[1].resource)
+        }));
     }
 
     #[test]

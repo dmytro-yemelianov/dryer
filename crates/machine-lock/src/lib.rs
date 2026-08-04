@@ -273,30 +273,30 @@ pub fn lock(
                 return Err(vec![Diagnostic::error(
                     "E1403",
                     format!(
-                        "safety resource '{}' is partitioned under controller '{controller_name}'",
-                        binding.resource.0
+                        "safety resource '{}' belongs to controller '{resource_controller}', not '{controller_name}'",
+                        binding.resource.0,
                     ),
                 )]);
             }
-            let sensor = binding.sensor.as_ref().map(|sensor| {
-                sensor
-                    .0
-                    .strip_prefix(&format!("{controller_name}."))
-                    .map(str::to_string)
-                    .ok_or_else(|| {
-                        vec![Diagnostic::error(
-                            "E1403",
-                            format!(
-                                "safety sensor '{}' is not local to controller '{controller_name}'",
-                                sensor.0
-                            ),
-                        )]
-                    })
-            });
-            let sensor = match sensor {
-                Some(result) => Some(result?),
-                None => None,
-            };
+            let sensor = binding
+                .sensor
+                .as_ref()
+                .map(|sensor| {
+                    sensor
+                        .0
+                        .strip_prefix(&format!("{controller_name}."))
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            vec![Diagnostic::error(
+                                "E1403",
+                                format!(
+                                    "safety sensor '{}' is not local to controller '{controller_name}'",
+                                    sensor.0
+                                ),
+                            )]
+                        })
+                })
+                .transpose()?;
             states.push(LockedSafeState {
                 component: binding.component.clone(),
                 class: binding.class.clone(),
@@ -408,6 +408,16 @@ impl Lockfile {
                     .collect();
                 let mut resources_with_safety = std::collections::BTreeSet::new();
                 for state in &safety.states {
+                    if state.component.trim().is_empty()
+                        || state.component.trim() != state.component
+                        || state.class.trim().is_empty()
+                        || state.class.trim() != state.class
+                    {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' has an empty or padded safety component/class",
+                            self.lock_version
+                        ));
+                    }
                     if !resources_with_safety.insert(state.resource.as_str()) {
                         return Err(format!(
                             "lockfile v{} controller '{name}' repeats safety state for physical resource '{}'",
@@ -542,17 +552,33 @@ impl Lockfile {
 
     /// Canonical bytes: deterministic JSON. The hash of a lockfile is the
     /// hash of these bytes regardless of how the YAML file was formatted.
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("lockfile serializes")
+    pub fn try_canonical_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        serde_json::to_vec(self)
     }
 
+    /// Infallible convenience wrapper for already validated lockfiles.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        self.try_canonical_bytes().expect("lockfile serializes")
+    }
+
+    /// Fallible lock hash for callers handling untrusted or mutated lock data.
+    pub fn try_lock_hash(&self) -> Result<String, serde_json::Error> {
+        self.try_canonical_bytes().map(|bytes| sha256_hex(&bytes))
+    }
+
+    /// Infallible convenience wrapper for already validated lockfiles.
     pub fn lock_hash(&self) -> String {
-        sha256_hex(&self.canonical_bytes())
+        self.try_lock_hash().expect("lockfile serializes")
     }
 
     /// The human-facing on-disk form (`machine.lock`).
+    pub fn try_to_yaml(&self) -> Result<String, serde_yaml::Error> {
+        serde_yaml::to_string(self)
+    }
+
+    /// Infallible convenience wrapper for already validated lockfiles.
     pub fn to_yaml(&self) -> String {
-        serde_yaml::to_string(self).expect("lockfile serializes")
+        self.try_to_yaml().expect("lockfile serializes")
     }
 
     pub fn from_yaml(text: &str) -> Result<Self, serde_yaml::Error> {
@@ -566,7 +592,9 @@ fn versioned_interface(value: &str) -> bool {
             && name
                 .chars()
                 .all(|character| character.is_ascii_lowercase() || character == '.')
-            && version.parse::<u32>().is_ok_and(|version| version > 0)
+            && matches!(version.as_bytes().first(), Some(b'1'..=b'9'))
+            && version.bytes().all(|digit| digit.is_ascii_digit())
+            && version.parse::<u32>().is_ok()
     })
 }
 
@@ -777,6 +805,24 @@ mod tests {
             "{error}"
         );
 
+        let mut malformed = valid.clone();
+        malformed
+            .controllers
+            .get_mut("mainboard")
+            .unwrap()
+            .safety
+            .as_mut()
+            .unwrap()
+            .states[0]
+            .component = " padded".to_string();
+        for error in [
+            malformed.try_canonical_bytes().unwrap_err().to_string(),
+            malformed.try_lock_hash().unwrap_err().to_string(),
+            malformed.try_to_yaml().unwrap_err().to_string(),
+        ] {
+            assert!(error.contains("empty or padded"), "{error}");
+        }
+
         let yaml = valid.to_yaml();
         let safety_start = yaml.find("    safety:\n").unwrap();
         let truncated = yaml[..safety_start].to_string();
@@ -860,7 +906,7 @@ mod tests {
             .build
             .as_mut()
             .unwrap()
-            .protocol_version = "unversioned".to_string();
+            .protocol_version = "dryer.control/v01".to_string();
         let error = serde_yaml::to_string(&invalid_interface).unwrap_err();
         assert!(error.to_string().contains("versioned interface"), "{error}");
 
@@ -890,5 +936,22 @@ mod tests {
         assert!(diagnostics[0]
             .message
             .contains("no compiled build configuration"));
+    }
+
+    #[test]
+    fn lock_creation_reports_the_actual_safety_resource_controller() {
+        let (source, registry) = setup();
+        let mut resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        resolved.controller_safety.get_mut("mainboard").unwrap()[0]
+            .resource
+            .0 = "toolboard.heater0".to_string();
+
+        let diagnostics = lock(&source, &registry, &resolved).unwrap_err();
+        assert_eq!(diagnostics[0].code, "E1403");
+        assert!(diagnostics[0]
+            .message
+            .contains("belongs to controller 'toolboard', not 'mainboard'"));
     }
 }

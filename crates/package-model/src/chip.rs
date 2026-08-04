@@ -165,7 +165,9 @@ fn versioned_interface(value: &str) -> bool {
             && name
                 .chars()
                 .all(|character| character.is_ascii_lowercase() || character == '.')
-            && version.parse::<u32>().is_ok_and(|version| version > 0)
+            && matches!(version.as_bytes().first(), Some(b'1'..=b'9'))
+            && version.bytes().all(|digit| digit.is_ascii_digit())
+            && version.parse::<u32>().is_ok()
     })
 }
 
@@ -485,5 +487,13 @@ firmware:
             assert!(errors.iter().any(|diagnostic| diagnostic.code == code));
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interface_versions_match_the_normative_schema_pattern() {
+        assert!(super::versioned_interface("dryer.control/v1"));
+        assert!(!super::versioned_interface("dryer.control/v0"));
+        assert!(!super::versioned_interface("dryer.control/v01"));
+        assert!(!super::versioned_interface("dryer.control/v4294967296"));
     }
 }

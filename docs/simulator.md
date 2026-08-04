@@ -6,8 +6,9 @@ golden tests"), spec §24.1.
 
 ## Purpose
 
-The simulator is the first *executing* consumer of a compiled controller artifact:
-it takes the artifact + a trivial job and produces a deterministic event trace.
+The simulator golden harness is the first *executing* consumer of a compiled
+controller artifact: it maps the artifact into `HeaterCfg`, runs a trivial job,
+and produces a deterministic event trace.
 It exists to (a) freeze end-to-end goldens before any firmware exists, and
 (b) force the control-protocol semantics (§16) to be designed against an
 implementation that can fail loudly.
@@ -61,7 +62,7 @@ resolve(minimal-cartesian) → lock v4 → compile safety artifact
 ```
 
 Plus fault goldens: heartbeat loss mid-heat must show the heater forced off
-within the profile's `heartbeat_timeout` ticks; a controller reset must show
+within the compiled artifact's `heartbeat_timeout_us`; a controller reset must show
 safe-state entry and a latched fault (§24.1 "controller reset and link-loss
 injection").
 
