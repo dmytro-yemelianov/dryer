@@ -5,17 +5,16 @@
 //! first problem, because resolver-style "list everything wrong" output is a
 //! stated project value (§11.3).
 //!
-//! Source location: diagnostics carry a dotted `path` plus the exact
-//! line/column of the named key or sequence item, from a marked YAML event
+//! Source location: diagnostics carry a dotted `path` plus the exact range
+//! of the named key or sequence item, from a marked YAML event
 //! walk ([`spans::SpanIndex`]). A path with no exact entry (e.g. a missing
-//! key being reported) locates at its nearest recorded ancestor. The spec's
-//! full `SourceSpan` (§11.3: ranges + `related` diagnostics) remains for
-//! the resolver's multi-source conflicts.
+//! key being reported) locates at its nearest recorded ancestor.
 
 pub mod spans;
 
 use dryer_machine_schema::{
-    valid_identifier, Diagnostic, Dimension, MachineDoc, Quantity, API_VERSION, KIND_MACHINE,
+    valid_identifier, Diagnostic, Dimension, MachineDoc, Quantity, SourceSpan, API_VERSION,
+    KIND_MACHINE,
 };
 use dryer_package_model::PackageRef;
 use spans::SpanIndex;
@@ -27,6 +26,8 @@ pub struct ParseOutcome {
     /// may still be accompanied by error diagnostics.
     pub doc: Option<MachineDoc>,
     pub diagnostics: Vec<Diagnostic>,
+    /// Reusable source map for later resolver diagnostics.
+    pub spans: SpanIndex,
 }
 
 impl ParseOutcome {
@@ -41,45 +42,61 @@ impl ParseOutcome {
 
 /// Parse and validate a machine manifest from YAML text.
 pub fn parse_str(source: &str) -> ParseOutcome {
+    parse_str_with_document(source, None)
+}
+
+fn parse_str_with_document(source: &str, document: Option<&str>) -> ParseOutcome {
     let mut diagnostics = Vec::new();
+    let spans = match document {
+        Some(document) => SpanIndex::build_named(source, document),
+        None => SpanIndex::build(source),
+    };
 
     let doc: MachineDoc = match serde_yaml::from_str(source) {
         Ok(d) => d,
         Err(e) => {
             let mut d = Diagnostic::error("E0100", format!("machine manifest does not parse: {e}"));
-            d.line = e.location().map(|l| l.line());
+            if let Some(location) = e.location() {
+                let mut source = SourceSpan::point(location.line(), location.column());
+                if let Some(document) = document {
+                    source = source.in_document(document);
+                }
+                d = d.with_source(source);
+            }
             return ParseOutcome {
                 doc: None,
                 diagnostics: vec![d],
+                spans,
             };
         }
     };
 
-    validate(&doc, source, &mut diagnostics);
+    validate(&doc, &spans, &mut diagnostics);
     ParseOutcome {
         doc: Some(doc),
         diagnostics,
+        spans,
     }
 }
 
 /// Parse and validate a machine manifest from a file.
 pub fn parse_file(path: &std::path::Path) -> ParseOutcome {
     match std::fs::read_to_string(path) {
-        Ok(text) => parse_str(&text),
+        Ok(text) => parse_str_with_document(&text, Some(&path.display().to_string())),
         Err(e) => ParseOutcome {
             doc: None,
             diagnostics: vec![Diagnostic::error(
                 "E0101",
                 format!("cannot read {}: {e}", path.display()),
             )],
+            spans: SpanIndex::default(),
         },
     }
 }
 
-fn validate(doc: &MachineDoc, source: &str, out: &mut Vec<Diagnostic>) {
-    let index = SpanIndex::build(source);
+fn validate(doc: &MachineDoc, index: &SpanIndex, out: &mut Vec<Diagnostic>) {
     let mut push = |d: Diagnostic| {
-        let d = locate(d, &index);
+        let d = locate(d, index);
         out.push(d);
     };
 
@@ -244,15 +261,14 @@ fn expected_limit_dimension(name: &str) -> Option<Dimension> {
 /// Attach the exact source location of the diagnostic's path (or its
 /// nearest recorded ancestor) from the span index.
 fn locate(mut d: Diagnostic, index: &SpanIndex) -> Diagnostic {
-    if d.line.is_some() {
+    if d.source.is_some() {
         return d;
     }
     let Some(path) = d.path.as_deref() else {
         return d;
     };
-    if let Some((line, col)) = index.locate(path) {
-        d.line = Some(line);
-        d.column = Some(col + 1);
+    if let Some(source) = index.locate_span(path) {
+        d = d.with_source(source);
     }
     d
 }
@@ -376,6 +392,12 @@ safety:
         assert_eq!(d.path.as_deref(), Some("kinematics.limits.max_velocity"));
         assert_eq!(d.line, Some(14), "exact key line from the span index");
         assert_eq!(d.column, Some(5), "1-based column of the key");
+        let span = d.source.as_ref().expect("structured source span");
+        assert_eq!(span.path.as_deref(), Some("kinematics.limits.max_velocity"));
+        assert_eq!(span.start.line, 14);
+        assert_eq!(span.start.column, 5);
+        assert_eq!(span.end.line, 14);
+        assert_eq!(span.end.column, 17, "exclusive end of max_velocity");
     }
 
     #[test]

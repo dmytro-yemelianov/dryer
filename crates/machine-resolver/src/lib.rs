@@ -41,10 +41,11 @@
 //! for explicit claims, retiring the attribute table wherever a device
 //! exists.
 //!
-//! Deliberately NOT here yet: firmware partitioning, range spans.
+//! Deliberately NOT here yet: firmware partitioning.
 //! Lockfile generation lives in `dryer-machine-lock`.
 
-use dryer_machine_schema::{Diagnostic, Dimension, MachineDoc, Quantity, Severity};
+use dryer_machine_parser::spans::SpanIndex;
+use dryer_machine_schema::{Diagnostic, Dimension, MachineDoc, Quantity, Severity, SourceSpan};
 use dryer_package_model::{board::BoardPackageFile, LocalRegistry, PackageRef};
 use dryer_resource_model::ResourceId;
 use serde::Serialize;
@@ -144,29 +145,116 @@ impl ResolveOutcome {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequirementConstraint {
+    required_by: String,
+    requirement: semver::VersionReq,
+    source: Option<SourceSpan>,
+}
+
+#[derive(Debug, Clone)]
+struct ResourceClaim {
+    component: String,
+    path: String,
+    source: Option<SourceSpan>,
+}
+
+#[derive(Debug, Clone)]
+struct TimerClaim {
+    component: String,
+    pin: String,
+    path: String,
+    source: Option<SourceSpan>,
+}
+
+fn expanded_source(sources: &BTreeMap<String, SourceSpan>, path: &str) -> Option<SourceSpan> {
+    let mut candidate = path.to_string();
+    loop {
+        if let Some(source) = sources.get(&candidate) {
+            return Some(source.clone());
+        }
+        let i = candidate.rfind(['.', '['])?;
+        candidate.truncate(i);
+    }
+}
+
+fn diagnostic_at_source(
+    diagnostic: Diagnostic,
+    path: &str,
+    source: Option<&SourceSpan>,
+) -> Diagnostic {
+    let diagnostic = diagnostic.at(path);
+    match source {
+        Some(source) => diagnostic.with_source(source.clone()),
+        None => diagnostic,
+    }
+}
+
+fn related_to_claim(
+    diagnostic: Diagnostic,
+    message: String,
+    path: &str,
+    source: Option<&SourceSpan>,
+) -> Diagnostic {
+    match source {
+        Some(source) => diagnostic.related_source(message, source.clone()),
+        None => diagnostic.related_at(message, path),
+    }
+}
+
+fn locate_diagnostics(diagnostics: &mut [Diagnostic], spans: &SpanIndex) {
+    for diagnostic in diagnostics {
+        if diagnostic.source.is_none() {
+            if let Some(path) = diagnostic.path.as_deref() {
+                if let Some(source) = spans.locate_span(path) {
+                    diagnostic.line = Some(source.start.line);
+                    diagnostic.column = Some(source.start.column);
+                    diagnostic.source = Some(source);
+                }
+            }
+        }
+        for related in &mut diagnostic.related {
+            if related.source.is_none() {
+                if let Some(path) = related.path.as_deref() {
+                    related.source = spans.locate_span(path);
+                }
+            }
+        }
+    }
+}
+
 /// Resolve a machine manifest source against a local package registry.
 ///
 /// Determinism (§11.4): all iteration is over `BTreeMap`s, so identical
 /// inputs produce identical outcomes including diagnostic order.
 pub fn resolve_source(source: &str, registry: &LocalRegistry) -> ResolveOutcome {
     let mut phases_run = vec![Phase::Parse, Phase::SchemaValidation];
-    let parsed = dryer_machine_parser::parse_str(source);
-    let mut diagnostics = parsed.diagnostics;
-    let Some(doc) = parsed.doc else {
-        return ResolveOutcome {
+    let dryer_machine_parser::ParseOutcome {
+        doc,
+        mut diagnostics,
+        spans,
+    } = dryer_machine_parser::parse_str(source);
+    let Some(doc) = doc else {
+        let mut outcome = ResolveOutcome {
             resolved: None,
             diagnostics,
             phases_run,
         };
+        locate_diagnostics(&mut outcome.diagnostics, &spans);
+        return outcome;
     };
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
-        return ResolveOutcome {
+        let mut outcome = ResolveOutcome {
             resolved: None,
             diagnostics,
             phases_run,
         };
+        locate_diagnostics(&mut outcome.diagnostics, &spans);
+        return outcome;
     }
-    resolve_doc(&doc, registry, &mut diagnostics, &mut phases_run)
+    let mut outcome = resolve_doc(&doc, registry, &mut diagnostics, &mut phases_run);
+    locate_diagnostics(&mut outcome.diagnostics, &spans);
+    outcome
 }
 
 fn resolve_doc(
@@ -191,10 +279,13 @@ fn resolve_doc(
     // conflicts with it are errors, never silent overrides.
     phases_run.push(Phase::PackageDependencies);
     let mut pins: BTreeMap<String, semver::Version> = BTreeMap::new();
-    for pkg in &doc.packages {
+    let mut pin_paths: BTreeMap<String, String> = BTreeMap::new();
+    for (index, pkg) in doc.packages.iter().enumerate() {
         // syntax already validated by the parser
         if let Ok(r) = PackageRef::parse(pkg) {
-            pins.insert(format!("{}/{}", r.namespace, r.name), r.version);
+            let path = format!("{}/{}", r.namespace, r.name);
+            pins.insert(path.clone(), r.version);
+            pin_paths.insert(path, format!("packages[{index}]"));
         }
     }
     let mut implicit_roots: std::collections::BTreeSet<String> = doc
@@ -207,7 +298,18 @@ fn resolve_doc(
         implicit_roots.insert(doc.safety.profile.clone());
     }
 
-    type Constraints = BTreeMap<String, Vec<(String, semver::VersionReq)>>;
+    let package_spans: BTreeMap<String, SpanIndex> = registry
+        .packages
+        .iter()
+        .filter_map(|package| {
+            let source = std::fs::read_to_string(package.dir.join("package.yaml")).ok()?;
+            let reference = package.reference.to_string();
+            let document = format!("package:{reference}/package.yaml");
+            Some((reference, SpanIndex::build_named(&source, document)))
+        })
+        .collect();
+
+    type Constraints = BTreeMap<String, Vec<RequirementConstraint>>;
     let mut constraints: Constraints = BTreeMap::new();
     let mut chosen: BTreeMap<String, semver::Version> = BTreeMap::new();
     let mut phase_errs: Vec<Diagnostic> = Vec::new();
@@ -250,20 +352,38 @@ fn resolve_doc(
                                     .join(", ")
                             ),
                         )
-                        .at("packages"),
+                        .at(pin_paths
+                            .get(path)
+                            .cloned()
+                            .unwrap_or_else(|| "packages".to_string())),
                     );
                     continue;
                 }
                 let mut excluded = false;
-                for (req_by, req) in &reqs {
-                    if !req.matches(pin) {
+                for constraint in &reqs {
+                    if !constraint.requirement.matches(pin) {
                         excluded = true;
-                        errs.push(Diagnostic::error(
+                        let mut diagnostic = Diagnostic::error(
                             "E1103",
                             format!(
-                                "'{req_by}' requires '{path}' {req} but the machine pins {pin}"
+                                "'{}' requires '{path}' {} but the machine pins {pin}",
+                                constraint.required_by, constraint.requirement
                             ),
-                        ));
+                        )
+                        .at(pin_paths
+                            .get(path)
+                            .cloned()
+                            .unwrap_or_else(|| "packages".to_string()));
+                        if let Some(source) = &constraint.source {
+                            diagnostic = diagnostic.related_source(
+                                format!(
+                                    "requirement from '{}' declared here",
+                                    constraint.required_by
+                                ),
+                                source.clone(),
+                            );
+                        }
+                        errs.push(diagnostic);
                     }
                 }
                 if !excluded {
@@ -273,7 +393,7 @@ fn resolve_doc(
                 let sat: Vec<&semver::Version> = available
                     .iter()
                     .copied()
-                    .filter(|v| reqs.iter().all(|(_, r)| r.matches(v)))
+                    .filter(|v| reqs.iter().all(|c| c.requirement.matches(v)))
                     .collect();
                 match sat.last() {
                     Some(v) => {
@@ -287,21 +407,39 @@ fn resolve_doc(
                         }
                         next.insert(path.clone(), (*v).clone());
                     }
-                    None => errs.push(Diagnostic::error(
-                        "E1104",
-                        format!(
-                            "no version of '{path}' satisfies {}; available: {}",
-                            reqs.iter()
-                                .map(|(by, r)| format!("'{by}' ({r})"))
-                                .collect::<Vec<_>>()
-                                .join(" and "),
-                            available
-                                .iter()
-                                .map(|v| v.to_string())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                    )),
+                    None => {
+                        let mut diagnostic = Diagnostic::error(
+                            "E1104",
+                            format!(
+                                "no version of '{path}' satisfies {}; available: {}",
+                                reqs.iter()
+                                    .map(|c| format!("'{}' ({})", c.required_by, c.requirement))
+                                    .collect::<Vec<_>>()
+                                    .join(" and "),
+                                available
+                                    .iter()
+                                    .map(|v| v.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        );
+                        let mut has_primary_source = false;
+                        for constraint in &reqs {
+                            let message = format!(
+                                "'{}' requires '{path}' {}",
+                                constraint.required_by, constraint.requirement
+                            );
+                            if let Some(source) = &constraint.source {
+                                if has_primary_source {
+                                    diagnostic = diagnostic.related_source(message, source.clone());
+                                } else {
+                                    diagnostic = diagnostic.with_source(source.clone());
+                                    has_primary_source = true;
+                                }
+                            }
+                        }
+                        errs.push(diagnostic);
+                    }
                 }
             }
         }
@@ -312,10 +450,16 @@ fn resolve_doc(
             if let Some(p) = registry.find_version(ns, name, ver) {
                 for (dep, d) in &p.manifest.dependencies {
                     if let Ok(req) = d.requirement() {
-                        new_constraints
-                            .entry(dep.clone())
-                            .or_default()
-                            .push((path.clone(), req));
+                        let source = package_spans
+                            .get(&p.reference.to_string())
+                            .and_then(|index| index.locate_span(&format!("dependencies.{dep}")));
+                        new_constraints.entry(dep.clone()).or_default().push(
+                            RequirementConstraint {
+                                required_by: path.clone(),
+                                requirement: req,
+                                source,
+                            },
+                        );
                     }
                 }
             }
@@ -465,6 +609,11 @@ fn resolve_doc(
     // graph stays explainable.
     phases_run.push(Phase::GraphExpansion);
     let mut expanded = doc.clone();
+    // Machine-style expanded paths -> exact package-template source. Keeping
+    // this beside the expanded graph lets later phases report the document
+    // that actually introduced a component instead of asking the machine's
+    // SpanIndex to locate a path that never existed there.
+    let mut expanded_sources: BTreeMap<String, SourceSpan> = BTreeMap::new();
     for path in chosen.keys() {
         let Some(pkg) = select(path) else { continue };
         if pkg.kind != dryer_package_model::PackageKind::Machine {
@@ -500,6 +649,19 @@ fn resolve_doc(
                         "I1133",
                         format!("component '{cid}' expanded from '{path}'"),
                     ));
+                    if let Some(index) = package_spans.get(&pkg.reference.to_string()) {
+                        let template_path = format!("template.components.{cid}");
+                        let expanded_path = format!("components.{cid}");
+                        if let Some(source) = index.get_span(&template_path) {
+                            expanded_sources.insert(expanded_path.clone(), source);
+                        }
+                        for attr in comp.attributes.keys() {
+                            if let Some(source) = index.get_span(&format!("{template_path}.{attr}"))
+                            {
+                                expanded_sources.insert(format!("{expanded_path}.{attr}"), source);
+                            }
+                        }
+                    }
                     e.insert(comp);
                 }
             }
@@ -586,7 +748,7 @@ fn resolve_doc(
         ..ResolvedGraph::default()
     };
     // connector -> first claimant, for exclusivity conflicts
-    let mut claims: BTreeMap<String, String> = BTreeMap::new();
+    let mut claims: BTreeMap<String, ResourceClaim> = BTreeMap::new();
     // Step-timing (docs/peripheral-mapping.md): when the machine declares a
     // step-rate budget, every stepper socket's step pin must sit on a timer
     // channel, and channels are exclusive. Reservations interleave with
@@ -599,7 +761,7 @@ fn resolve_doc(
         .get("max_step_rate")
         .and_then(|v| Quantity::parse_as(v, Dimension::Frequency).ok());
     // "ctrl.timN.chM" -> (claiming component, step pin)
-    let mut timer_claims: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let mut timer_claims: BTreeMap<String, TimerClaim> = BTreeMap::new();
 
     for (cname, comp) in &doc.components {
         for (attr, val) in &comp.attributes {
@@ -613,58 +775,64 @@ fn resolve_doc(
                     .and_then(|d| d.connector.clone())
                     .unwrap_or_else(|| table_kind.to_string()),
             };
+            let claim_path = format!("components.{cname}.{attr}");
+            let claim_source = expanded_source(&expanded_sources, &claim_path);
             // The parser guarantees shape and controller existence for
             // SOURCE components; template-expanded components bypass it,
             // so both are re-checked here rather than silently skipped.
             let Some((ctrl, port)) = target.split_once('.') else {
-                diagnostics.push(
+                diagnostics.push(diagnostic_at_source(
                     Diagnostic::error(
                         "E1206",
                         format!(
                             "component '{cname}': '{target}' must name a controller port as 'controller.port'"
                         ),
-                    )
-                    .at(format!("components.{cname}.{attr}")),
-                );
+                    ),
+                    &claim_path,
+                    claim_source.as_ref(),
+                ));
                 continue;
             };
             let Some(board) = boards.get(ctrl) else {
-                diagnostics.push(
+                diagnostics.push(diagnostic_at_source(
                     Diagnostic::error(
                         "E1206",
                         format!("component '{cname}': unknown controller '{ctrl}' in '{target}'"),
-                    )
-                    .at(format!("components.{cname}.{attr}")),
-                );
+                    ),
+                    &claim_path,
+                    claim_source.as_ref(),
+                ));
                 continue;
             };
 
             let Some(connector) = board.connectors.get(port) else {
                 let known: Vec<&String> = board.connectors.keys().collect();
-                diagnostics.push(
+                diagnostics.push(diagnostic_at_source(
                     Diagnostic::error(
                         "E1201",
                         format!(
                             "component '{cname}': controller '{ctrl}' has no connector '{port}'"
                         ),
                     )
-                    .at(format!("components.{cname}.{attr}"))
                     .suggest(format!("available connectors: {known:?}")),
-                );
+                    &claim_path,
+                    claim_source.as_ref(),
+                ));
                 continue;
             };
 
             if connector.kind != expected_kind {
-                diagnostics.push(
+                diagnostics.push(diagnostic_at_source(
                     Diagnostic::error(
                         "E1202",
                         format!(
                             "component '{cname}': '{target}' is a {} connector, but '{attr}' requires {expected_kind}",
                             connector.kind
                         ),
-                    )
-                    .at(format!("components.{cname}.{attr}")),
-                );
+                    ),
+                    &claim_path,
+                    claim_source.as_ref(),
+                ));
                 continue;
             }
 
@@ -679,13 +847,23 @@ fn resolve_doc(
                     })
                     .map(|(id, _)| format!("{ctrl}.{id}"))
                     .collect();
-                let mut d = Diagnostic::error(
-                    "E1200",
-                    format!(
-                        "connector conflict: '{target}' is claimed by both '{prev}' and '{cname}'"
+                let mut d = diagnostic_at_source(
+                    Diagnostic::error(
+                        "E1200",
+                        format!(
+                            "connector conflict: '{target}' is claimed by both '{prev}' and '{cname}'",
+                            prev = prev.component
+                        ),
                     ),
-                )
-                .at(format!("components.{cname}.{attr}"));
+                    &claim_path,
+                    claim_source.as_ref(),
+                );
+                d = related_to_claim(
+                    d,
+                    format!("'{}' first claimed '{target}' here", prev.component),
+                    &prev.path,
+                    prev.source.as_ref(),
+                );
                 if free.is_empty() {
                     d = d.suggest(format!(
                         "no free {expected_kind} connectors remain on '{ctrl}'"
@@ -708,33 +886,50 @@ fn resolve_doc(
                     let step_pin = connector.pins.get("step").cloned().unwrap_or_default();
                     match step_funcs.iter().find(|f| f.starts_with("tim")) {
                         None => {
-                            diagnostics.push(
+                            diagnostics.push(diagnostic_at_source(
                                 Diagnostic::error(
                                     "E1310",
                                     format!(
                                         "component '{cname}': max_step_rate is declared, but '{target}' step pin {step_pin} has no timer function (capabilities: {})",
                                         step_funcs.join(", ")
                                     ),
-                                )
-                                .at(format!("components.{cname}.{attr}")),
-                            );
+                                ),
+                                &claim_path,
+                                claim_source.as_ref(),
+                            ));
                             continue;
                         }
                         Some(tok) => {
                             let key = format!("{ctrl}.{tok}");
-                            if let Some((other, opin)) = timer_claims.get(&key) {
-                                diagnostics.push(
+                            if let Some(other) = timer_claims.get(&key) {
+                                let d = diagnostic_at_source(
                                     Diagnostic::error(
                                         "E1314",
                                         format!(
-                                            "timer conflict: '{cname}' (pin {step_pin}) and '{other}' (pin {opin}) both need {tok} on '{ctrl}'"
+                                            "timer conflict: '{cname}' (pin {step_pin}) and '{}' (pin {}) both need {tok} on '{ctrl}'",
+                                            other.component, other.pin
                                         ),
-                                    )
-                                    .at(format!("components.{cname}.{attr}")),
+                                    ),
+                                    &claim_path,
+                                    claim_source.as_ref(),
                                 );
+                                diagnostics.push(related_to_claim(
+                                    d,
+                                    format!("'{}' reserved {tok} here", other.component),
+                                    &other.path,
+                                    other.source.as_ref(),
+                                ));
                                 continue;
                             }
-                            timer_claims.insert(key, (cname.clone(), step_pin));
+                            timer_claims.insert(
+                                key,
+                                TimerClaim {
+                                    component: cname.clone(),
+                                    pin: step_pin,
+                                    path: claim_path.clone(),
+                                    source: claim_source.clone(),
+                                },
+                            );
                             constraints.push(format!(
                                 "step pin on free timer channel {tok} (max_step_rate)"
                             ));
@@ -742,7 +937,14 @@ fn resolve_doc(
                     }
                 }
             }
-            claims.insert(target.to_string(), cname.clone());
+            claims.insert(
+                target.to_string(),
+                ResourceClaim {
+                    component: cname.clone(),
+                    path: claim_path,
+                    source: claim_source,
+                },
+            );
             resolved
                 .assignments
                 .entry(cname.clone())
@@ -779,6 +981,8 @@ fn resolve_doc(
         let Some(required_kind) = dreq.connector.clone() else {
             continue;
         };
+        let component_path = format!("components.{cname}");
+        let component_source = expanded_source(&expanded_sources, &component_path);
         let required_domains = dreq.domains.clone();
         let required_bus = dreq.bus.clone();
         // Which controller to search: an explicit `controller:` attribute,
@@ -880,7 +1084,14 @@ fn resolve_doc(
             );
             continue;
         };
-        claims.insert(target.clone(), cname.clone());
+        claims.insert(
+            target.clone(),
+            ResourceClaim {
+                component: cname.clone(),
+                path: component_path.clone(),
+                source: component_source.clone(),
+            },
+        );
         let target_caps = target
             .split_once('.')
             .and_then(|(c, port)| {
@@ -924,7 +1135,15 @@ fn resolve_doc(
                     .get(port)
                     .and_then(|conn| conn.pins.get("step").cloned())
                     .unwrap_or_default();
-                timer_claims.insert(format!("{c}.{tok}"), (cname.clone(), step_pin));
+                timer_claims.insert(
+                    format!("{c}.{tok}"),
+                    TimerClaim {
+                        component: cname.clone(),
+                        pin: step_pin,
+                        path: component_path,
+                        source: component_source,
+                    },
+                );
                 constraints.push(format!(
                     "step pin on free timer channel {tok} (max_step_rate)"
                 ));
@@ -1248,6 +1467,18 @@ mod tests {
         LocalRegistry::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages"))
     }
 
+    fn registry_with_conflicting_template() -> LocalRegistry {
+        let mut registry = registry();
+        let package = registry
+            .packages
+            .iter_mut()
+            .find(|package| package.reference.to_string() == "machines/cartesian-basic@1.0.0")
+            .expect("cartesian template package");
+        package.dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/template-conflict");
+        registry
+    }
+
     fn fixture() -> String {
         std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1282,6 +1513,11 @@ mod tests {
             serde_json::to_string(&a.resolved).unwrap(),
             serde_json::to_string(&b.resolved).unwrap()
         );
+        assert_eq!(
+            serde_json::to_string(&a.diagnostics).unwrap(),
+            serde_json::to_string(&b.diagnostics).unwrap(),
+            "diagnostic ranges and related locations are deterministic"
+        );
     }
 
     #[test]
@@ -1304,6 +1540,68 @@ mod tests {
             "should suggest the free socket: {:?}",
             conflict.suggestions
         );
+        let source = conflict.source.as_ref().expect("second claim source");
+        assert_eq!(
+            source.path.as_deref(),
+            Some("components.y_driver.connected_to")
+        );
+        assert_eq!((source.start.column, source.end.column), (5, 17));
+        assert_eq!(conflict.related.len(), 1);
+        let first = conflict.related[0]
+            .source
+            .as_ref()
+            .expect("first claim source");
+        assert_eq!(
+            first.path.as_deref(),
+            Some("components.x_driver.connected_to")
+        );
+        assert_eq!((first.start.column, first.end.column), (5, 17));
+    }
+
+    #[test]
+    fn template_claim_conflicts_retain_package_source_ranges() {
+        let o = resolve_source(&with_rate(), &registry_with_conflicting_template());
+        assert!(!o.is_ok());
+
+        let connector = o
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E1200")
+            .expect("connector conflict");
+        let template_claim = connector.related[0]
+            .source
+            .as_ref()
+            .expect("template connector source");
+        assert_eq!(
+            template_claim.document.as_deref(),
+            Some("package:machines/cartesian-basic@1.0.0/package.yaml")
+        );
+        assert_eq!(
+            template_claim.path.as_deref(),
+            Some("template.components.a_template_driver.connected_to")
+        );
+
+        let timer = o
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E1314")
+            .expect("timer conflict");
+        assert_eq!(
+            timer
+                .source
+                .as_ref()
+                .and_then(|source| source.path.as_deref()),
+            Some("template.components.b_template_driver.connected_to")
+        );
+        assert_eq!(
+            timer.related[0]
+                .source
+                .as_ref()
+                .and_then(|source| source.path.as_deref()),
+            Some("template.components.a_template_driver.connected_to")
+        );
+        assert!(timer.source.as_ref().unwrap().document.is_some());
+        assert!(timer.related[0].source.as_ref().unwrap().document.is_some());
     }
 
     #[test]
@@ -1601,6 +1899,15 @@ mod tests {
             "{}",
             d.message
         );
+        assert_eq!(d.related.len(), 1);
+        assert_eq!(
+            d.source.as_ref().and_then(|s| s.path.as_deref()),
+            Some("components.z_driver.connected_to")
+        );
+        assert_eq!(
+            d.related[0].source.as_ref().and_then(|s| s.path.as_deref()),
+            Some("components.x_driver.connected_to")
+        );
     }
 
     /// Voltage domains are checked on explicit claims: legacy-probe
@@ -1671,6 +1978,23 @@ mod tests {
         assert!(!o.is_ok());
         let d = o.diagnostics.iter().find(|d| d.code == "E1103").unwrap();
         assert!(d.message.contains("devices/tmc2209") && d.message.contains("1.0.0"));
+        assert_eq!(
+            d.source.as_ref().and_then(|s| s.path.as_deref()),
+            Some("packages[2]")
+        );
+        assert_eq!(d.related.len(), 1);
+        let requirement = d.related[0]
+            .source
+            .as_ref()
+            .expect("dependency requirement source");
+        assert_eq!(
+            requirement.document.as_deref(),
+            Some("package:devices/tmc2209@2.1.0/package.yaml")
+        );
+        assert_eq!(
+            requirement.path.as_deref(),
+            Some("dependencies.chips/generic-mcu")
+        );
     }
 
     /// Two requirers with disjoint ranges on one package: no version can
@@ -1690,6 +2014,37 @@ mod tests {
             d.message
         );
         assert!(d.message.contains("available: 1.0.0, 1.2.0"));
+        let mut sources: Vec<_> = d
+            .source
+            .iter()
+            .chain(d.related.iter().filter_map(|r| r.source.as_ref()))
+            .map(|source| {
+                (
+                    source.document.clone().unwrap(),
+                    source.path.clone().unwrap(),
+                )
+            })
+            .collect();
+        sources.sort();
+        assert_eq!(
+            sources,
+            vec![
+                (
+                    "package:devices/legacy-probe@1.0.0/package.yaml".to_string(),
+                    "dependencies.chips/generic-mcu".to_string(),
+                ),
+                (
+                    "package:devices/tmc2209@2.1.0/package.yaml".to_string(),
+                    "dependencies.chips/generic-mcu".to_string(),
+                ),
+            ]
+        );
+        let repeated = resolve_source(&both, &registry());
+        assert_eq!(
+            serde_json::to_string(&o.diagnostics).unwrap(),
+            serde_json::to_string(&repeated.diagnostics).unwrap(),
+            "multi-source conflict output must be byte-stable"
+        );
     }
 
     #[test]

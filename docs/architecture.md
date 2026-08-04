@@ -43,8 +43,9 @@ mutating deployment implementation.
 
 - `machine-schema` is the leaf: document types, quantities, identifiers, and the
   shared `Diagnostic` type. (The spec defines `Diagnostic` under the resolver §11.3;
-  it lives here so the parser and resolver share one type. The resolver will extend
-  it with `SourceSpan`/`related` rather than fork it.)
+  it lives here so the parser and resolver share one type. It includes exact
+  `SourceSpan` ranges and `related` locations while retaining the v0.1
+  `path`/`line`/`column` compatibility projection.)
 - Dependencies point downward only. `machine-resolver` depends on the model/parser
   layer; no model crate depends on the resolver.
 - `machine-lock` captures successful resolution. `firmware-flash` consumes the lock

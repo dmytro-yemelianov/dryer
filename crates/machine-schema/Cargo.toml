@@ -10,3 +10,6 @@ description = "Machine Graph v0.1 document types, typed physical quantities, ide
 [dependencies]
 serde = { workspace = true }
 serde_yaml = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
