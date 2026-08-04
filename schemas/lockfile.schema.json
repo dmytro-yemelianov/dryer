@@ -1,15 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dryer.yemelianov.dev/schemas/lockfile.schema.json",
-  "title": "Dryer machine.lock v4",
-  "description": "Generated capture of one successful resolution. Users do not edit it. Normative reference implementation: crates/machine-lock. v4 adds required, versioned controller build inputs (exact board/chip/driver packages, target, toolchain, memory, protocol/ABI, and features) alongside the v3 controller-local safety partition. Registry source identity and expected reproducible output hashes remain deferred.",
+  "title": "Dryer machine.lock v5",
+  "description": "Generated capture of one successful resolution. Users do not edit it. Normative reference implementation: crates/machine-lock. v5 adds a portable, validated registry identity and hashes the exact registry descriptor bytes. Exact package content remains pinned independently. Expected reproducible firmware output hashes remain deferred.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["lock_version", "machine_hash", "resolver_version", "packages", "safety_profile", "controllers"],
+  "required": ["lock_version", "machine_hash", "resolver_version", "registry_source", "packages", "safety_profile", "controllers"],
   "properties": {
-    "lock_version": { "const": 4 },
+    "lock_version": { "const": 5 },
     "machine_hash": { "$ref": "#/$defs/sha256" },
     "resolver_version": { "type": "string" },
+    "registry_source": { "$ref": "#/$defs/registry_source" },
     "packages": {
       "type": "array",
       "items": { "$ref": "#/$defs/locked_package" }
@@ -22,6 +23,17 @@
   },
   "$defs": {
     "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "registry_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "id", "uri", "descriptor_hash"],
+      "properties": {
+        "schema": { "const": "dryer.registry-source/v1" },
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+        "uri": { "type": "string", "pattern": "^(?!file:)[a-z][a-z0-9+.-]*:[^\\s\\\\]+$" },
+        "descriptor_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
     "locked_package": {
       "type": "object",
       "additionalProperties": false,

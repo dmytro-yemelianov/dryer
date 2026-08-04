@@ -13,8 +13,9 @@ into locked, explainable firmware and runtime configuration.
 
 **Status: configuration layer complete, no runtime yet.** This repository contains
 the Machine Graph v0.1 schema and parser (exact source locations), the package model
-with a multi-version local registry, the resource model, an eleven-phase deterministic
-resolver (transitive dependency closure, graph expansion from machine templates,
+with a multi-version local registry and portable source descriptor, the resource
+model, an eleven-phase deterministic resolver (transitive dependency closure, graph
+expansion from machine templates,
 explicit + search-based connector allocation, electrical and safety-coverage
 validation, controller-local safety partitioning, target-aware artifact planning,
 explainable assignments), hashed `machine.lock` generation, deterministic controller
@@ -41,9 +42,9 @@ The authoritative specification lives in `docs/spec.md` (Draft v0.1). Key princi
 | `crates/machine-schema` | Machine Graph v0.1 document types, typed physical quantities, identifier rules, shared diagnostics |
 | `crates/machine-parser` | YAML → validated Machine Graph with structured, located diagnostics |
 | `crates/resource-model` | Generic hardware resource/constraint/preference model used by the future resolver |
-| `crates/package-model` | Package identity (`namespace/name@version`), manifests, board payloads, dependency ranges, local directory registry |
+| `crates/package-model` | Package identity (`namespace/name@version`), manifests, board payloads, dependency ranges, local directory registry, portable registry provenance |
 | `crates/machine-resolver` | Deterministic resolution: explicit phases through firmware partitioning, connector allocation, electrical/timing/safety checks, explainable assignments |
-| `crates/machine-lock` | `machine.lock` v4: canonical, hashed resolution plus controller-local safety and build inputs |
+| `crates/machine-lock` | `machine.lock` v5: canonical, hashed resolution plus registry provenance, controller-local safety, and build inputs |
 | `crates/firmware-build` | Byte-stable, hashed per-controller safety artifacts and deterministic build plans compiled from `machine.lock` |
 | `crates/simulator` | Deterministic simulated controller: virtual clock, faulty transport, scheduled queue windows, edge-enforced safety, and structured trace replay |
 | `crates/firmware-flash` | Native USB discovery on Linux/macOS/Windows, strict device matching, artifact verification, and deterministic dry-run flash plans |

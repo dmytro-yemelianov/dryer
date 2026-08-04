@@ -101,6 +101,56 @@ fn ambiguity_and_artifact_drift_are_both_blocking() {
 }
 
 #[test]
+fn registry_source_drift_is_rejected_before_flash_planning() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let lock = Lockfile::from_yaml(
+        &std::fs::read_to_string(root.join("examples/minimal-cartesian/machine.lock")).unwrap(),
+    )
+    .unwrap();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let changed_registry_dir = std::env::temp_dir().join(format!(
+        "dryer-flash-registry-drift-{}-{nonce}",
+        std::process::id()
+    ));
+    copy_tree(&root.join("packages"), &changed_registry_dir);
+    std::fs::write(
+        changed_registry_dir.join("registry.yaml"),
+        b"schema: dryer.registry/v1\nid: dryer-official\nuri: git+https://example.invalid/dryer.git?subdir=packages\n",
+    )
+    .unwrap();
+    let registry = LocalRegistry::load(&changed_registry_dir);
+    assert!(registry.diagnostics.is_empty());
+    let artifact = root.join("examples/minimal-cartesian/firmware.fixture.bin");
+
+    let error = plan_dry_run(DryRunRequest {
+        controller: "mainboard",
+        lock: &lock,
+        registry: &registry,
+        discovered_devices: &[],
+        artifact: ArtifactSpec {
+            path: &artifact,
+            plan_path: "examples/minimal-cartesian/firmware.fixture.bin",
+            expected_sha256:
+                "sha256:6c92abd61b162679e332cdad7b2a7753d1888de5fecb3363331207ca99d73c2a",
+            signature: None,
+        },
+        expected_current_firmware: "dryer-simulator/0.1.0",
+    })
+    .unwrap_err();
+    match error {
+        PlanError::RegistryDrift(message) => {
+            assert!(message.contains("registry source expected"), "{message}")
+        }
+        other => panic!("expected registry source drift, got {other}"),
+    }
+
+    std::fs::remove_dir_all(changed_registry_dir).unwrap();
+}
+
+#[test]
 fn package_companion_file_drift_is_blocking() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let lock = Lockfile::from_yaml(

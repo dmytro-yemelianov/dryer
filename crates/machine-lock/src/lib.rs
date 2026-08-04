@@ -1,12 +1,12 @@
 //! `machine.lock` (spec §12, §29 step 7): a generated, canonical, hashed
 //! capture of one successful resolution.
 //!
-//! v0.4 field scope, stated honestly: exact package versions + portable
+//! v0.5 field scope, stated honestly: exact package versions + portable
 //! full-content digests (§6.6), manifest hashes, the machine-source hash,
-//! resolver identity, the pinned safety profile, and per-controller resolved
-//! resources plus compiled controller safety and firmware build inputs.
-//! Registry source identity and expected reproducible output hashes remain
-//! deferred.
+//! resolver and registry-source identity, the pinned safety profile, and
+//! per-controller resolved resources plus compiled controller safety and
+//! firmware build inputs. Expected reproducible output hashes remain deferred
+//! until a real firmware backend exists.
 //!
 //! Canonical form: JSON with every map a `BTreeMap`, so byte-identical
 //! lockfiles for identical inputs. The on-disk file is YAML for humans;
@@ -14,12 +14,12 @@
 
 use dryer_machine_resolver::ResolvedGraph;
 use dryer_machine_schema::Diagnostic;
-use dryer_package_model::LocalRegistry;
+use dryer_package_model::{LocalRegistry, RegistrySource};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-pub const LOCK_VERSION: u32 = 4;
+pub const LOCK_VERSION: u32 = 5;
 pub const CONTROLLER_SAFETY_SCHEMA: &str = "dryer.controller-safety/v1";
 pub const CONTROLLER_BUILD_SCHEMA: &str = "dryer.controller-build-plan/v1";
 
@@ -30,6 +30,8 @@ pub struct Lockfile {
     pub machine_hash: String,
     /// The resolver that produced this (crate version; §12 'resolver version').
     pub resolver_version: String,
+    /// Present and required in lockfile v5+; absent in legacy v1-v4 locks.
+    pub registry_source: Option<RegistrySource>,
     pub packages: Vec<LockedPackage>,
     /// The safety profile the resolution validated against (§12 requires
     /// the lock to pin the safety-profile version).
@@ -105,6 +107,8 @@ struct LockfileRef<'a> {
     lock_version: u32,
     machine_hash: &'a str,
     resolver_version: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registry_source: &'a Option<RegistrySource>,
     packages: &'a [LockedPackage],
     safety_profile: &'a LockedPackage,
     controllers: &'a BTreeMap<String, LockedController>,
@@ -115,6 +119,8 @@ struct LockfileOwned {
     lock_version: u32,
     machine_hash: String,
     resolver_version: String,
+    #[serde(default)]
+    registry_source: Option<RegistrySource>,
     packages: Vec<LockedPackage>,
     safety_profile: LockedPackage,
     controllers: BTreeMap<String, LockedController>,
@@ -130,6 +136,7 @@ impl Serialize for Lockfile {
             lock_version: self.lock_version,
             machine_hash: &self.machine_hash,
             resolver_version: &self.resolver_version,
+            registry_source: &self.registry_source,
             packages: &self.packages,
             safety_profile: &self.safety_profile,
             controllers: &self.controllers,
@@ -148,6 +155,7 @@ impl<'de> Deserialize<'de> for Lockfile {
             lock_version: wire.lock_version,
             machine_hash: wire.machine_hash,
             resolver_version: wire.resolver_version,
+            registry_source: wire.registry_source,
             packages: wire.packages,
             safety_profile: wire.safety_profile,
             controllers: wire.controllers,
@@ -174,6 +182,12 @@ pub fn lock(
     let Some(doc) = parsed.doc else {
         return Err(parsed.diagnostics);
     };
+    let registry_source = registry.source.clone().ok_or_else(|| {
+        vec![Diagnostic::error(
+            "E1406",
+            "registry has no validated portable source descriptor",
+        )]
+    })?;
 
     // The lock pins the resolver's full closure — explicit pins, implicit
     // roots and transitive dependencies — not merely the manifest's list.
@@ -355,6 +369,7 @@ pub fn lock(
         lock_version: LOCK_VERSION,
         machine_hash: sha256_hex(source.as_bytes()),
         resolver_version: env!("CARGO_PKG_VERSION").to_string(),
+        registry_source: Some(registry_source),
         packages,
         safety_profile,
         controllers,
@@ -547,6 +562,20 @@ impl Lockfile {
                 }
             }
         }
+        if self.lock_version >= 5 {
+            let source = self.registry_source.as_ref().ok_or_else(|| {
+                format!(
+                    "lockfile v{} has no registry source identity",
+                    self.lock_version
+                )
+            })?;
+            source.validate().map_err(|error| {
+                format!(
+                    "lockfile v{} has invalid registry source identity: {error}",
+                    self.lock_version
+                )
+            })?;
+        }
         Ok(())
     }
 
@@ -635,6 +664,18 @@ mod tests {
             .resolved
             .unwrap();
         let l = lock(&source, &registry, &resolved).unwrap();
+        let registry_source = l.registry_source.as_ref().expect("v5 registry source");
+        assert_eq!(
+            registry_source.schema,
+            dryer_package_model::REGISTRY_SOURCE_SCHEMA
+        );
+        assert_eq!(registry_source.id, "dryer-official");
+        assert_eq!(
+            registry_source.uri,
+            "git+https://github.com/dmytro-yemelianov/dryer.git?subdir=packages"
+        );
+        assert!(registry_source.descriptor_hash.starts_with("sha256:"));
+        registry_source.validate().unwrap();
         let main = &l.controllers["mainboard"];
         assert_eq!(main.resolved_resources["x_driver/connected_to"], "motor0");
         assert_eq!(main.resolved_resources["hotend_heater/output"], "heater0");
@@ -700,6 +741,7 @@ mod tests {
             .unwrap();
         let mut legacy = lock(&source, &registry, &resolved).unwrap();
         legacy.lock_version = 1;
+        legacy.registry_source = None;
         for package in &mut legacy.packages {
             package.content_hash.clear();
         }
@@ -715,6 +757,7 @@ mod tests {
             .iter()
             .all(|package| package.content_hash.is_empty()));
         assert!(parsed.safety_profile.content_hash.is_empty());
+        assert!(parsed.registry_source.is_none());
         assert!(parsed
             .controllers
             .values()
@@ -729,12 +772,14 @@ mod tests {
             .unwrap();
         let mut legacy = lock(&source, &registry, &resolved).unwrap();
         legacy.lock_version = 2;
+        legacy.registry_source = None;
         for controller in legacy.controllers.values_mut() {
             controller.safety = None;
             controller.build = None;
         }
         let parsed = Lockfile::from_yaml(&legacy.to_yaml()).unwrap();
         assert_eq!(parsed.lock_version, 2);
+        assert!(parsed.registry_source.is_none());
         assert!(parsed
             .controllers
             .values()
@@ -749,15 +794,36 @@ mod tests {
             .unwrap();
         let mut legacy = lock(&source, &registry, &resolved).unwrap();
         legacy.lock_version = 3;
+        legacy.registry_source = None;
         for controller in legacy.controllers.values_mut() {
             controller.build = None;
         }
         let parsed = Lockfile::from_yaml(&legacy.to_yaml()).unwrap();
         assert_eq!(parsed.lock_version, 3);
+        assert!(parsed.registry_source.is_none());
         assert!(parsed
             .controllers
             .values()
             .all(|controller| controller.safety.is_some() && controller.build.is_none()));
+    }
+
+    #[test]
+    fn legacy_v4_locks_without_registry_identity_still_parse() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let mut legacy = lock(&source, &registry, &resolved).unwrap();
+        legacy.lock_version = 4;
+        legacy.registry_source = None;
+
+        let parsed = Lockfile::from_yaml(&legacy.to_yaml()).unwrap();
+        assert_eq!(parsed.lock_version, 4);
+        assert!(parsed.registry_source.is_none());
+        assert!(parsed
+            .controllers
+            .values()
+            .all(|controller| { controller.safety.is_some() && controller.build.is_some() }));
     }
 
     #[test]
@@ -921,6 +987,47 @@ mod tests {
             .features = vec!["not valid".to_string()];
         let error = serde_yaml::to_string(&invalid_feature).unwrap_err();
         assert!(error.to_string().contains("invalid identifier"), "{error}");
+    }
+
+    #[test]
+    fn v5_locks_require_a_valid_registry_source_identity() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let valid = lock(&source, &registry, &resolved).unwrap();
+
+        let mut missing = valid.clone();
+        missing.registry_source = None;
+        let error = serde_yaml::to_string(&missing).unwrap_err();
+        assert!(
+            error.to_string().contains("no registry source identity"),
+            "{error}"
+        );
+
+        let mut malformed = valid;
+        malformed.registry_source.as_mut().unwrap().uri =
+            "file:///Users/example/packages".to_string();
+        let error = serde_yaml::to_string(&malformed).unwrap_err();
+        assert!(
+            error.to_string().contains("portable absolute URI"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn lock_creation_rejects_a_registry_without_portable_identity() {
+        let (source, mut registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        registry.source = None;
+
+        let diagnostics = lock(&source, &registry, &resolved).unwrap_err();
+        assert_eq!(diagnostics[0].code, "E1406");
+        assert!(diagnostics[0]
+            .message
+            .contains("no validated portable source descriptor"));
     }
 
     #[test]

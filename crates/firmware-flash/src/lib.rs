@@ -314,6 +314,31 @@ impl std::error::Error for PlanError {
 /// Produce a complete, non-mutating plan from locked package metadata,
 /// discovered USB inventory, and independently verified artifact bytes.
 pub fn plan_dry_run(request: DryRunRequest<'_>) -> Result<FlashPlan, PlanError> {
+    request.lock.validate().map_err(PlanError::InvalidLock)?;
+    if request.lock.lock_version >= 5 {
+        let locked_source = request
+            .lock
+            .registry_source
+            .as_ref()
+            .expect("lockfile v5 validation requires a registry source");
+        let observed_source = request.registry.source.as_ref().ok_or_else(|| {
+            PlanError::RegistryDrift(
+                "local registry has no validated portable source descriptor".into(),
+            )
+        })?;
+        if observed_source != locked_source {
+            return Err(PlanError::RegistryDrift(format!(
+                "registry source expected '{}', {} at {}; observed '{}', {} at {}",
+                locked_source.id,
+                locked_source.descriptor_hash,
+                locked_source.uri,
+                observed_source.id,
+                observed_source.descriptor_hash,
+                observed_source.uri
+            )));
+        }
+    }
+
     let expected_sha256 = normalize_sha256(request.artifact.expected_sha256)?;
     if request.artifact.plan_path.trim().is_empty() {
         return Err(PlanError::InvalidInput(

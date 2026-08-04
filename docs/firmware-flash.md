@@ -72,6 +72,8 @@ for example, Windows may not expose a cached manufacturer string.
 a discovered inventory, a firmware artifact plus expected sha256, and the expected
 current firmware identity. It verifies:
 
+- the live registry's portable source id, URI, and exact descriptor hash match
+  lockfile v5;
 - the controller has exactly one version-pinned board package;
 - the local board manifest still matches its lockfile hash;
 - every file in the local board package still matches the v2 content hash;
@@ -82,6 +84,10 @@ current firmware identity. It verifies:
 Artifact-hash mismatch and missing/ambiguous devices are reported together in
 `blocked_reasons`. Structural input, lockfile, registry, and IO failures are returned
 as errors because no truthful plan can be constructed from them.
+
+Legacy v1-v4 locks remain readable and keep their historical package-drift checks.
+New v5 plans additionally fail before artifact or device planning when
+`packages/registry.yaml` is absent, invalid, or differs from the locked source.
 
 The `dryer.flash-plan/v0.1` JSON records the lock hash, exact board, selection rule and
 candidates, expected current firmware, observed and expected artifact hashes, optional

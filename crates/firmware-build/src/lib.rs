@@ -328,10 +328,39 @@ mod tests {
     fn legacy_v3_locks_cannot_produce_build_plans() {
         let mut lock = fixture_lock();
         lock.lock_version = 3;
+        lock.registry_source = None;
         for controller in lock.controllers.values_mut() {
             controller.build = None;
         }
         let error = plan_controller(&lock, "mainboard").unwrap_err();
         assert_eq!(error, BuildError::UnsupportedBuildPlanLockVersion(3));
+    }
+
+    #[test]
+    fn legacy_v4_locks_without_registry_identity_can_still_build() {
+        let mut lock = fixture_lock();
+        lock.lock_version = 4;
+        lock.registry_source = None;
+
+        compile_controller(&lock, "mainboard").unwrap();
+        plan_controller(&lock, "mainboard").unwrap();
+    }
+
+    #[test]
+    fn v5_locks_without_registry_identity_cannot_build() {
+        let mut lock = fixture_lock();
+        lock.registry_source = None;
+
+        for error in [
+            compile_controller(&lock, "mainboard").unwrap_err(),
+            plan_controller(&lock, "mainboard").unwrap_err(),
+        ] {
+            match error {
+                BuildError::InvalidLock(message) => {
+                    assert!(message.contains("registry source identity"), "{message}")
+                }
+                other => panic!("expected invalid v5 registry identity, got {other}"),
+            }
+        }
     }
 }

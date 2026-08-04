@@ -118,8 +118,14 @@ tests exist and pass, not that a type was declared.
   versioned compiled safety partition for every controller while v1/v2 remain
   readable. Slice 14 introduced lockfile v4, pinning the resolved target triple,
   toolchain/build profile, memory and boot layout, protocol/ABI versions, sorted
-  features, and exact native-driver packages; v3 locks remain readable. *Remaining
-  for [x]:* registry source identity and expected reproducible output hashes.
+  features, and exact native-driver packages; v3 locks remain readable. Slice 15
+  introduced lockfile v5 and **portable registry provenance**: every lock records a
+  validated logical registry id and portable non-`file:` URI plus a sha256 over the
+  exact `registry.yaml` descriptor bytes. Descriptorless registries remain inspectable
+  but cannot produce v5 locks; flash planning compares the live descriptor before
+  reading board metadata or artifacts; legacy v1-v4 locks remain readable. *Remaining
+  for [x]:* expected reproducible firmware output hashes, which require a real
+  firmware backend.
 - [ ] **8. Klipper config and build-parameter export** *(license/provenance record
   required first — §23.5)*
 - [x] **9. Simulated controller and end-to-end golden tests** — `dryer-simulator`

@@ -1,6 +1,11 @@
-lock_version: 4
+lock_version: 5
 machine_hash: sha256:24309adb115a1ca858d6530b09b24bad0077eecbcec840fb8683d8d5a4379182
 resolver_version: 0.1.0
+registry_source:
+  schema: dryer.registry-source/v1
+  id: dryer-official
+  uri: git+https://github.com/dmytro-yemelianov/dryer.git?subdir=packages
+  descriptor_hash: sha256:6138256e51835c3138fd083c7da2701f6dc9d8ae7779f637c33942e3affcfc8c
 packages:
 - id: boards/example-mainboard@1.0.0
   manifest_hash: sha256:ae764f00fa42948859de165899573df981e96101ce04a039097d8d6c2b62a5f5

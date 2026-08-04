@@ -55,7 +55,7 @@ VirtualClock ──► SimTransport ──► SimController ──► TraceLog
 ## Golden end-to-end test (the step-9 exit)
 
 ```text
-resolve(minimal-cartesian) → lock v4 → compile safety artifact
+resolve(minimal-cartesian) → lock v5 → compile safety artifact
 → job: [home X, heat to 60 °C, wait, move]
 → run simulator (fixed seed, fixed tick budget)
 → trace == examples/minimal-cartesian/job-trace.golden   (drift-gated in CI)

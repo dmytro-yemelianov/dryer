@@ -53,13 +53,14 @@ mutating deployment implementation.
 - `machine-resolver` joins board pins to chip capabilities and treats connector,
   electrical, bus-frequency, measured latency/jitter, and DMA-route requirements as
   deterministic hard allocation constraints. Accepted evidence stays on assignments.
-- `machine-lock` captures successful resolution, exact package-tree content
-  digests, controller-local safety bindings, and deterministic firmware target/build
-  inputs. `firmware-build` turns those bindings into versioned, byte-stable safety
+- `machine-lock` captures successful resolution, portable registry identity and exact
+  descriptor hash, exact package-tree content digests, controller-local safety
+  bindings, and deterministic firmware target/build inputs. `firmware-build` turns
+  those bindings into versioned, byte-stable safety
   and build-plan artifacts without rereading package policy or target metadata.
-  `firmware-flash` consumes the lock and board-package metadata, rejects
-  manifest or companion-file drift, but cannot call back into resolution or mutate
-  hardware.
+  `firmware-flash` consumes the lock and board-package metadata, rejects registry
+  identity, descriptor, manifest, or companion-file drift, but cannot call back into
+  resolution or mutate hardware.
 - The simulator's public semantic types stay independent of configuration crates;
   only its tests adapt the compiled controller artifact into simulated inputs.
 
@@ -73,6 +74,13 @@ flash plan binds a locked controller to an observed USB candidate and artifact, 
 is not yet a
 `DeployedGraph`: activation, confirmation, and persistent physical-controller identity
 do not exist. Runtime observation remains a future state-service type.
+
+The committed package root contains `packages/registry.yaml`. Its
+`dryer.registry/v1` descriptor gives the registry a stable logical id and a portable
+absolute URI; workstation-local `file:` locations are rejected. Lockfile v5 stores a
+`dryer.registry-source/v1` projection with the SHA-256 of the exact descriptor bytes.
+Package content hashes remain independent, so provenance and immutable package bytes
+are both checked rather than conflated.
 
 ## External integration intent
 

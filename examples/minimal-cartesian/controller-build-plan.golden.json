@@ -1,7 +1,7 @@
 {
   "schema": "dryer.controller-build-plan/v1",
   "controller": "mainboard",
-  "lock_hash": "sha256:16f2091a621581e05a6277e8939e80edd4b8d6ab2b261d45e33131fd6df4cca2",
+  "lock_hash": "sha256:b44687b2848ac7c787d5ea2c7fd82f69230eb5d0df00be27b5bbcfec44b42010",
   "board": "boards/example-mainboard@1.0.0",
   "chip": "chips/generic-mcu@1.5.0",
   "target_triple": "thumbv7em-none-eabihf",

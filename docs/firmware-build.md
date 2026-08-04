@@ -3,11 +3,11 @@
 Status: Implemented build-input boundary · Target: spec §11.2 phases 11–12,
 §18.2, and §21.1 build-plan inputs.
 
-`dryer-firmware-build` compiles a v4 `machine.lock` into deterministic controller
-inputs: `dryer.controller-safety/v1` for the edge-enforced safety projection and
-`dryer.controller-build-plan/v1` for the selected target/toolchain contract. It is
-intentionally not a firmware executor: a future native backend must consume these
-locked artifacts unchanged.
+`dryer-firmware-build` compiles the current v5 `machine.lock` into deterministic
+controller inputs: `dryer.controller-safety/v1` for the edge-enforced safety
+projection and `dryer.controller-build-plan/v1` for the selected target/toolchain
+contract. It is intentionally not a firmware executor: a future native backend must
+consume these locked artifacts unchanged.
 
 ## Data flow
 
@@ -16,7 +16,7 @@ safety profile policy
   → resolver safety validation
   → firmware partitioning by concrete controller resource
   → artifact planning from chip target metadata
-  → machine.lock v4
+  → machine.lock v5
   ├─→ dryer.controller-safety/v1 artifact → simulator today
   └─→ dryer.controller-build-plan/v1 artifact → firmware backend later
 ```
@@ -39,9 +39,12 @@ and RAM budgets, a valid bootloader offset, target triple, toolchain, build prof
 protocol/ABI versions, and feature flags. The resolver adds exact board/chip package
 versions and native device-driver packages selected by concrete assignments.
 
-Lockfile v4 stores `safety` and `build` blocks for every controller. Older v1-v3 locks
-remain readable for inspection; safety artifacts require v3+, while build plans
-require v4 because missing target metadata must never become an implicit default.
+Lockfile v4 introduced `safety` and `build` blocks for every controller. Lockfile v5
+also requires portable registry-source identity and an exact descriptor hash. Older
+v1-v4 locks remain readable for inspection and retain their historical build
+semantics; safety artifacts require v3+, while build plans require v4 because missing
+target metadata must never become an implicit default. A malformed v5 lock cannot
+produce either artifact.
 
 ## Artifact contract
 
