@@ -89,7 +89,18 @@ tests exist and pass, not that a type was declared.
   in the crate docs).
 - [ ] **8. Klipper config and build-parameter export** *(license/provenance record
   required first — §23.5)*
-- [ ] **9. Simulated controller and end-to-end golden tests**
+- [~] **9. Simulated controller and end-to-end golden tests** — `dryer-simulator`
+  per [`simulator.md`](simulator.md): 1 µs virtual clock, typed command semantics
+  (wire framing deliberately later), transport with seeded jitter/loss/duplication
+  and link faults, bounded queue, first-order thermal plant + endstop homing with
+  exact clamped motion, and the §18.1 edge-enforced safety envelope — heartbeat
+  loss forces the RESOLVED profile's safe state within its typed timeout, resets
+  latch faults and reject further commands. Byte-stable integer-only traces;
+  the fixture job golden (`examples/minimal-cartesian/job-trace.golden`) is
+  drift-gated by test with an UPDATE_TRACE regeneration path; seeded-fault
+  determinism pinned (identical seeds ⇒ identical traces under jitter+loss+dup).
+  *Remaining for [x]:* multi-controller clock skew (deferred per design Q3),
+  queue timestamp windows, and replay tooling beyond first-divergence.
 - [ ] **10. Cross-platform flash discovery and dry-run plans**
 
 ## Diagnostic code conventions (Phase 0 deliverable)
@@ -114,8 +125,6 @@ tests exist and pass, not that a type was declared.
   a §23.6 to be written.
 - **Timing/bus-signal data model**: [`peripheral-mapping.md`](peripheral-mapping.md)
   is fully implemented (pin tables, wiring check, capabilities, step timing, bus matching).
-- **Simulated controller** (§29 step 9): designed in [`simulator.md`](simulator.md)
-  (virtual clock, typed commands before wire frames, safety-envelope enforcement
-  from the resolved profile, drift-gated trace goldens); implementation not started.
+- **Simulated controller** (§29 step 9): implemented — see the step-9 entry above.
 - Package schemas for chip/board/device/workflow kinds (§7–§9) land with the
   resolver slices that consume them; only `machine.schema.json` is normative today.

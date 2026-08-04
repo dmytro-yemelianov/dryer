@@ -41,6 +41,7 @@ The authoritative specification lives in `docs/spec.md` (Draft v0.1). Key princi
 | `crates/package-model` | Package identity (`namespace/name@version`), manifests, board payloads, dependency ranges, local directory registry |
 | `crates/machine-resolver` | Deterministic resolution: 9 explicit phases, explicit-claim + search-based connector allocation, electrical + safety-coverage checks, explainable assignments, conflict diagnostics with suggestions |
 | `crates/machine-lock` | `machine.lock`: canonical, hashed capture of a resolution (drift-gated golden in `examples/`) |
+| `crates/simulator` | Deterministic simulated controller: virtual clock, faulty transport, edge-enforced safety envelope, byte-stable trace goldens |
 
 ```bash
 cargo test --workspace

@@ -1,0 +1,27 @@
+{"event":"accepted","at":1000,"what":"home x"}
+{"event":"accepted","at":1000,"what":"set hotend_heater -> 60000 mC"}
+{"event":"executed","at":1000,"what":"heater hotend_heater target 60000 mC"}
+{"event":"temp_sample","at":100000,"heater":"hotend_heater","milli_c":34756}
+{"event":"temp_sample","at":200000,"heater":"hotend_heater","milli_c":44037}
+{"event":"temp_sample","at":300000,"heater":"hotend_heater","milli_c":52865}
+{"event":"temp_sample","at":400000,"heater":"hotend_heater","milli_c":60066}
+{"event":"endstop","at":500000,"axis":"x"}
+{"event":"executed","at":500000,"what":"home x"}
+{"event":"temp_sample","at":500000,"heater":"hotend_heater","milli_c":60015}
+{"event":"temp_sample","at":600000,"heater":"hotend_heater","milli_c":60063}
+{"event":"temp_sample","at":700000,"heater":"hotend_heater","milli_c":60011}
+{"event":"temp_sample","at":800000,"heater":"hotend_heater","milli_c":60060}
+{"event":"accepted","at":801000,"what":"move x 2000 um"}
+{"event":"temp_sample","at":900000,"heater":"hotend_heater","milli_c":60008}
+{"event":"executed","at":1000000,"what":"move x 2000 um"}
+{"event":"temp_sample","at":1000000,"heater":"hotend_heater","milli_c":60057}
+{"event":"temp_sample","at":1100000,"heater":"hotend_heater","milli_c":60005}
+{"event":"temp_sample","at":1200000,"heater":"hotend_heater","milli_c":60053}
+{"event":"temp_sample","at":1300000,"heater":"hotend_heater","milli_c":60002}
+{"event":"temp_sample","at":1400000,"heater":"hotend_heater","milli_c":60050}
+{"event":"temp_sample","at":1500000,"heater":"hotend_heater","milli_c":59999}
+{"event":"temp_sample","at":1600000,"heater":"hotend_heater","milli_c":60047}
+{"event":"temp_sample","at":1700000,"heater":"hotend_heater","milli_c":59995}
+{"event":"temp_sample","at":1800000,"heater":"hotend_heater","milli_c":60044}
+{"event":"temp_sample","at":1900000,"heater":"hotend_heater","milli_c":59992}
+{"event":"temp_sample","at":2000000,"heater":"hotend_heater","milli_c":60040}

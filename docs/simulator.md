@@ -1,6 +1,6 @@
 # Simulated controller — design
 
-Status: Proposed · Target: §29 step 9 ("simulated controller and end-to-end
+Status: Implemented (v0: single controller; open Q3 multi-controller deferred as proposed) · Target: §29 step 9 ("simulated controller and end-to-end
 golden tests"), spec §24.1.
 
 ## Purpose

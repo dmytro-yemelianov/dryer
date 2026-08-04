@@ -1,0 +1,18 @@
+[package]
+name = "dryer-simulator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic simulated controller: virtual clock, typed command semantics, faulty transport, safety-envelope enforcement, byte-stable traces"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+dryer-machine-parser = { path = "../machine-parser" }
+dryer-machine-resolver = { path = "../machine-resolver" }
+dryer-package-model = { path = "../package-model" }
+dryer-machine-schema = { path = "../machine-schema" }
