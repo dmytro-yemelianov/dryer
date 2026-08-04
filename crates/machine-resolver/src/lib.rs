@@ -16,10 +16,17 @@
 //! first **electrical validation** check (§11.2 phase 8): a component's
 //! declared `current` draw must fit the connector's `max_current`.
 //!
+//! Slice 3 added the **safety phase** (profile coverage, §18); slice 5
+//! rebuilt phase 3 as **transitive closure resolution**: roots are the
+//! machine's pins plus implicit references (boards, safety profile),
+//! dependency ranges intersect per package, and each package resolves to
+//! the highest satisfying version at a fixpoint — machine pins are
+//! absolute. The closure is published on `ResolvedGraph::packages` and is
+//! what the lockfile pins.
+//!
 //! Deliberately NOT here yet: timing validation, firmware partitioning,
-//! graph expansion (templates), transitive dependency solving, and
-//! `SourceSpan` tracking. Each is a later slice; lockfile generation
-//! lives in `forge-machine-lock`.
+//! and graph expansion (templates). Each is a later slice; lockfile
+//! generation lives in `forge-machine-lock`.
 
 use forge_machine_schema::{Diagnostic, Dimension, MachineDoc, Quantity, Severity};
 use forge_package_model::{board::BoardPackageFile, LocalRegistry, PackageRef};
@@ -63,10 +70,15 @@ pub struct Assignment {
     pub constraints_applied: Vec<String>,
 }
 
-/// The resolved graph, v0.1: deterministic assignments keyed by component.
+/// The resolved graph, v0.1: deterministic assignments keyed by component,
+/// plus the full package closure the machine uses.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ResolvedGraph {
     pub assignments: BTreeMap<String, Vec<Assignment>>,
+    /// Every package the resolution selected — explicit pins, implicit
+    /// roots (boards, safety profile) and transitive dependencies — as
+    /// `namespace/name@version`, sorted. This is what the lockfile pins.
+    pub packages: Vec<String>,
 }
 
 impl ResolvedGraph {
@@ -144,61 +156,178 @@ fn resolve_doc(
         phases_run,
     };
 
-    // --- Phase 3: package dependency resolution ------------------------
+    // --- Phase 3: package dependency resolution (transitive closure) ---
+    //
+    // Roots are the machine's explicit pins plus its implicit package
+    // references (controller boards, the safety profile). Dependencies are
+    // resolved to a fixpoint: each package's version is the HIGHEST
+    // registry version satisfying the intersection of every requirer's
+    // range (§11.4 stable selection rule); a machine pin is absolute and
+    // conflicts with it are errors, never silent overrides.
     phases_run.push(Phase::PackageDependencies);
-    let mut pinned: BTreeMap<String, PackageRef> = BTreeMap::new();
+    let mut pins: BTreeMap<String, semver::Version> = BTreeMap::new();
     for pkg in &doc.packages {
         // syntax already validated by the parser
         if let Ok(r) = PackageRef::parse(pkg) {
-            pinned.insert(format!("{}/{}", r.namespace, r.name), r);
+            pins.insert(format!("{}/{}", r.namespace, r.name), r.version);
         }
     }
-    for (path, r) in &pinned {
-        match registry.find(&r.namespace, &r.name) {
-            None => diagnostics.push(
-                Diagnostic::error("E1100", format!("package '{path}' is not in the registry"))
-                    .at("packages"),
-            ),
-            Some(found) if found.reference.version != r.version => diagnostics.push(
-                Diagnostic::error(
-                    "E1101",
-                    format!(
-                        "package '{path}' pinned at {} but the registry has {}",
-                        r.version, found.reference.version
-                    ),
-                )
-                .at("packages"),
-            ),
-            Some(found) => {
-                // dependency ranges of the loaded package must be satisfied
-                // by other pins (no transitive solving in v0.1 — flat pins).
-                for (dep, d) in &found.manifest.dependencies {
-                    let Ok(req) = d.requirement() else { continue };
-                    match pinned.get(dep) {
-                        None => diagnostics.push(Diagnostic::warning(
-                            "E1102",
+    let mut implicit_roots: std::collections::BTreeSet<String> = doc
+        .controllers
+        .values()
+        .map(|c| c.board.clone())
+        .filter(|b| b.contains('/'))
+        .collect();
+    if doc.safety.profile.contains('/') {
+        implicit_roots.insert(doc.safety.profile.clone());
+    }
+
+    type Constraints = BTreeMap<String, Vec<(String, semver::VersionReq)>>;
+    let mut constraints: Constraints = BTreeMap::new();
+    let mut chosen: BTreeMap<String, semver::Version> = BTreeMap::new();
+    let mut phase_errs: Vec<Diagnostic> = Vec::new();
+    let mut phase_warns: Vec<Diagnostic> = Vec::new();
+    let mut converged = false;
+    for _round in 0..64 {
+        let mut next: BTreeMap<String, semver::Version> = BTreeMap::new();
+        let mut errs: Vec<Diagnostic> = Vec::new();
+        let mut warns: Vec<Diagnostic> = Vec::new();
+        let paths: std::collections::BTreeSet<String> = pins
+            .keys()
+            .chain(implicit_roots.iter())
+            .chain(constraints.keys())
+            .cloned()
+            .collect();
+        for path in &paths {
+            let Some((ns, name)) = path.split_once('/') else {
+                continue;
+            };
+            let available = registry.versions(ns, name);
+            if available.is_empty() {
+                errs.push(
+                    Diagnostic::error("E1100", format!("package '{path}' is not in the registry"))
+                        .at("packages"),
+                );
+                continue;
+            }
+            let reqs = constraints.get(path).cloned().unwrap_or_default();
+            if let Some(pin) = pins.get(path) {
+                if !available.contains(&pin) {
+                    errs.push(
+                        Diagnostic::error(
+                            "E1101",
                             format!(
-                                "'{path}' depends on '{dep}' ({req}) which is not pinned in this machine"
+                                "package '{path}' pinned at {pin} but the registry has {}",
+                                available
+                                    .iter()
+                                    .map(|v| v.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
                             ),
-                        )),
-                        Some(dep_pin) if !req.matches(&dep_pin.version) => {
-                            diagnostics.push(Diagnostic::error(
-                                "E1103",
+                        )
+                        .at("packages"),
+                    );
+                    continue;
+                }
+                let mut excluded = false;
+                for (req_by, req) in &reqs {
+                    if !req.matches(pin) {
+                        excluded = true;
+                        errs.push(Diagnostic::error(
+                            "E1103",
+                            format!(
+                                "'{req_by}' requires '{path}' {req} but the machine pins {pin}"
+                            ),
+                        ));
+                    }
+                }
+                if !excluded {
+                    next.insert(path.clone(), pin.clone());
+                }
+            } else {
+                let sat: Vec<&semver::Version> = available
+                    .iter()
+                    .copied()
+                    .filter(|v| reqs.iter().all(|(_, r)| r.matches(v)))
+                    .collect();
+                match sat.last() {
+                    Some(v) => {
+                        if reqs.is_empty() && implicit_roots.contains(path) {
+                            warns.push(Diagnostic::warning(
+                                "E1106",
                                 format!(
-                                    "'{path}' requires '{dep}' {req} but the machine pins {}",
-                                    dep_pin.version
+                                    "'{path}' is not version-pinned; selected {v} (highest available)"
                                 ),
-                            ))
+                            ));
                         }
-                        Some(_) => {}
+                        next.insert(path.clone(), (*v).clone());
+                    }
+                    None => errs.push(Diagnostic::error(
+                        "E1104",
+                        format!(
+                            "no version of '{path}' satisfies {}; available: {}",
+                            reqs.iter()
+                                .map(|(by, r)| format!("'{by}' ({r})"))
+                                .collect::<Vec<_>>()
+                                .join(" and "),
+                            available
+                                .iter()
+                                .map(|v| v.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    )),
+                }
+            }
+        }
+        // Re-derive constraints from the manifests of the chosen set.
+        let mut new_constraints: Constraints = BTreeMap::new();
+        for (path, ver) in &next {
+            let (ns, name) = path.split_once('/').expect("paths are ns/name");
+            if let Some(p) = registry.find_version(ns, name, ver) {
+                for (dep, d) in &p.manifest.dependencies {
+                    if let Ok(req) = d.requirement() {
+                        new_constraints
+                            .entry(dep.clone())
+                            .or_default()
+                            .push((path.clone(), req));
                     }
                 }
             }
         }
+        let stable = next == chosen && new_constraints == constraints;
+        chosen = next;
+        constraints = new_constraints;
+        phase_errs = errs;
+        phase_warns = warns;
+        if stable {
+            converged = true;
+            break;
+        }
     }
+    if !converged && phase_errs.is_empty() {
+        phase_errs.push(Diagnostic::error(
+            "E1107",
+            "dependency resolution did not converge (cyclic version constraints?)",
+        ));
+    }
+    diagnostics.extend(phase_warns);
+    diagnostics.extend(phase_errs);
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return fail(std::mem::take(diagnostics), phases_run.clone());
     }
+    // The closure: every package the machine uses, with its selected version.
+    let select = |path: &str| -> Option<&forge_package_model::LoadedPackage> {
+        let (ns, name) = path.split_once('/')?;
+        match chosen.get(path) {
+            Some(v) => registry.find_version(ns, name, v),
+            None => registry.find(ns, name),
+        }
+    };
+    let closure_refs: Vec<String> = chosen
+        .iter()
+        .map(|(path, v)| format!("{path}@{v}"))
+        .collect();
 
     // --- Phase 4: package loading (board payloads per controller) ------
     phases_run.push(Phase::PackageLoading);
@@ -217,7 +346,8 @@ fn resolve_doc(
             );
             continue;
         };
-        match registry.find(ns, name) {
+        let _ = (ns, name); // shape validated above; selection is closure-aware
+        match select(&ctrl.board) {
             None => diagnostics.push(
                 Diagnostic::error(
                     "E1111",
@@ -262,7 +392,10 @@ fn resolve_doc(
     phases_run.push(Phase::CapabilityMatching);
     phases_run.push(Phase::ResourceAllocation);
 
-    let mut resolved = ResolvedGraph::default();
+    let mut resolved = ResolvedGraph {
+        packages: closure_refs,
+        ..ResolvedGraph::default()
+    };
     // connector -> first claimant, for exclusivity conflicts
     let mut claims: BTreeMap<String, String> = BTreeMap::new();
 
@@ -372,7 +505,8 @@ fn resolve_doc(
         {
             continue; // explicitly claimed above
         }
-        let Some(dev) = registry.find("devices", &comp.kind) else {
+        // closure-pinned version first; highest available otherwise
+        let Some(dev) = select(&format!("devices/{}", comp.kind)) else {
             continue; // no device package for this type — nothing to search for
         };
         let Ok(payload) = dev.device_payload() else {
@@ -515,7 +649,7 @@ fn resolve_doc(
     // no hazardous output escapes policy — the §30 "no unresolved safety
     // defaults" gate.
     phases_run.push(Phase::SafetyValidation);
-    let Some((s_ns, s_name)) = doc.safety.profile.split_once('/') else {
+    if !doc.safety.profile.contains('/') {
         diagnostics.push(
             Diagnostic::error(
                 "E1500",
@@ -527,8 +661,8 @@ fn resolve_doc(
             .at("safety.profile"),
         );
         return fail(std::mem::take(diagnostics), phases_run.clone());
-    };
-    match registry.find(s_ns, s_name) {
+    }
+    match select(&doc.safety.profile) {
         None => {
             diagnostics.push(
                 Diagnostic::error(
@@ -777,13 +911,17 @@ mod tests {
         assert!(o.diagnostics.iter().any(|d| d.code == "E1301"));
     }
 
+    /// The safety profile is an implicit dependency root, so a missing one
+    /// now fails in phase 3 (E1100) — before any allocation work — rather
+    /// than surviving to the safety phase.
     #[test]
-    fn a_missing_safety_profile_fails_resolution() {
+    fn a_missing_safety_profile_fails_resolution_at_the_package_phase() {
         let bad = fixture().replace("safety-profiles/desktop-fdm", "safety-profiles/ghost");
         let o = resolve_source(&bad, &registry());
         assert!(!o.is_ok());
-        assert!(o.diagnostics.iter().any(|d| d.code == "E1500"));
-        assert_eq!(*o.phases_run.last().unwrap(), Phase::SafetyValidation);
+        let d = o.diagnostics.iter().find(|d| d.code == "E1100").unwrap();
+        assert!(d.message.contains("safety-profiles/ghost"));
+        assert_eq!(*o.phases_run.last().unwrap(), Phase::PackageDependencies);
     }
 
     /// A component driving a power output whose class the profile does not
@@ -796,6 +934,57 @@ mod tests {
         assert!(!o.is_ok());
         let d = o.diagnostics.iter().find(|d| d.code == "E1501").unwrap();
         assert!(d.message.contains("laser"));
+    }
+
+    /// The closure pulls tmc2209's chip dependency at the highest version
+    /// satisfying its range, and records implicit roots (board, safety
+    /// profile) alongside explicit pins.
+    #[test]
+    fn the_closure_selects_transitive_dependencies_at_max_satisfying_version() {
+        let o = resolve_source(&fixture(), &registry());
+        assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
+        let pkgs = o.resolved.unwrap().packages;
+        assert!(
+            pkgs.contains(&"chips/generic-mcu@1.2.0".to_string()),
+            "transitive dep at max satisfying (not 1.0.0): {pkgs:?}"
+        );
+        assert!(pkgs.contains(&"boards/example-mainboard@1.0.0".to_string()));
+        assert!(pkgs.contains(&"safety-profiles/desktop-fdm@1.0.0".to_string()));
+        // the unpinned implicit safety profile carries a warning, not an error
+        assert!(o.diagnostics.iter().any(|d| d.code == "E1106"));
+    }
+
+    /// A machine pin that a dependency range excludes is an error — pins
+    /// are absolute, never silently overridden (§11.4).
+    #[test]
+    fn a_machine_pin_excluded_by_a_dependency_range_is_rejected() {
+        let pinned_old = fixture().replace(
+            "  - devices/tmc2209@2.1.0",
+            "  - devices/tmc2209@2.1.0\n  - chips/generic-mcu@1.0.0",
+        );
+        let o = resolve_source(&pinned_old, &registry());
+        assert!(!o.is_ok());
+        let d = o.diagnostics.iter().find(|d| d.code == "E1103").unwrap();
+        assert!(d.message.contains("devices/tmc2209") && d.message.contains("1.0.0"));
+    }
+
+    /// Two requirers with disjoint ranges on one package: no version can
+    /// satisfy the intersection — a conflict naming both requirers.
+    #[test]
+    fn disjoint_dependency_ranges_are_a_conflict_naming_both_requirers() {
+        let both = fixture().replace(
+            "  - devices/tmc2209@2.1.0",
+            "  - devices/tmc2209@2.1.0\n  - devices/legacy-probe@1.0.0",
+        );
+        let o = resolve_source(&both, &registry());
+        assert!(!o.is_ok());
+        let d = o.diagnostics.iter().find(|d| d.code == "E1104").unwrap();
+        assert!(
+            d.message.contains("tmc2209") && d.message.contains("legacy-probe"),
+            "both requirers named: {}",
+            d.message
+        );
+        assert!(d.message.contains("available: 1.0.0, 1.2.0"));
     }
 
     #[test]

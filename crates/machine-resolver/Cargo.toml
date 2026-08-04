@@ -13,6 +13,7 @@ forge-machine-schema = { path = "../machine-schema" }
 forge-machine-parser = { path = "../machine-parser" }
 forge-package-model = { path = "../package-model" }
 forge-resource-model = { path = "../resource-model" }
+semver.workspace = true
 
 [dev-dependencies]
 serde_json = { workspace = true }

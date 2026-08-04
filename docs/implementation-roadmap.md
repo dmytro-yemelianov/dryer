@@ -39,8 +39,15 @@ tests exist and pass, not that a type was declared.
   `requires.connector` (§9 subset), unclaimed components get the first free
   kind-compatible connector in stable order (§11.4), all candidates recorded (§11.5),
   with E1203 ambiguity (multi-controller without `controller:`) and E1205 exhaustion
-  errors. *Remaining for [x]:* real `SourceSpan`s, transitive dependency resolution,
-  graph expansion, bus/signal requirement matching.
+  errors. Slice 5 rebuilt phase 3 as **transitive closure resolution** over a
+  **multi-version registry** (`packages/<ns>/<name>/<version>/` layout, E0606
+  dir-version agreement): roots = explicit pins + implicit references (controller
+  boards, the safety profile); per-package ranges intersect; each package resolves to
+  the highest satisfying version at a fixpoint (64-round cap, E1107); machine pins
+  are absolute (range-excluded pin = E1103, empty intersection = E1104 naming every
+  requirer, unpinned implicit root = E1106 warning). The closure is published on
+  `ResolvedGraph::packages`. *Remaining for [x]:* graph expansion, bus/signal
+  requirement matching, range spans + `related` diagnostics.
 - [~] **6. Electrical, timing, and safety validation** — first electrical check landed
   as resolver phase 8: a component's declared `current` draw is quantity-parsed and
   compared against the assigned connector's `max_current` (E1300; malformed draw

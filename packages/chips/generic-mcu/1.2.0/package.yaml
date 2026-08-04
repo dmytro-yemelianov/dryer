@@ -1,0 +1,8 @@
+package:
+  namespace: chips
+  name: generic-mcu
+  version: 1.2.0
+  kind: chip
+
+architecture:
+  family: arm

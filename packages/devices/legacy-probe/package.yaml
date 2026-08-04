@@ -1,0 +1,13 @@
+package:
+  namespace: devices
+  name: legacy-probe
+  version: 1.0.0
+  kind: device
+
+device:
+  class: probe
+  model: legacy
+
+dependencies:
+  chips/generic-mcu:
+    version: "<1.1"

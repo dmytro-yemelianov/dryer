@@ -11,6 +11,10 @@ device:
 requires:
   connector: stepper_driver_socket
 
+dependencies:
+  chips/generic-mcu:
+    version: ">=1.2,<2.0"
+
 capabilities:
   - stepper.drive
   - stepper.uart_config

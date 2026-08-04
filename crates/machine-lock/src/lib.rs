@@ -71,13 +71,18 @@ pub fn lock(
         return Err(parsed.diagnostics);
     };
 
+    // The lock pins the resolver's full closure — explicit pins, implicit
+    // roots and transitive dependencies — not merely the manifest's list.
     let mut packages = Vec::new();
-    for pkg in &doc.packages {
+    for pkg in &resolved.packages {
         let Ok(r) = forge_package_model::PackageRef::parse(pkg) else {
-            continue; // resolution already rejected malformed refs
+            continue; // the resolver produced these; malformed would be its bug
         };
-        let Some(found) = registry.find(&r.namespace, &r.name) else {
-            continue; // resolution already rejected missing packages
+        let Some(found) = registry.find_version(&r.namespace, &r.name, &r.version) else {
+            return Err(vec![Diagnostic::error(
+                "E1402",
+                format!("resolved package '{pkg}' is no longer in the registry"),
+            )]);
         };
         let manifest_bytes = std::fs::read(found.dir.join("package.yaml")).map_err(|e| {
             vec![Diagnostic::error(
@@ -118,36 +123,22 @@ pub fn lock(
         }
     }
 
-    let safety_profile = {
-        let Some((ns, name)) = doc.safety.profile.split_once('/') else {
-            return Err(vec![Diagnostic::error(
-                "E1401",
-                format!(
-                    "safety profile '{}' is not 'namespace/name'",
-                    doc.safety.profile
-                ),
-            )]);
-        };
-        let Some(found) = registry.find(ns, name) else {
-            return Err(vec![Diagnostic::error(
-                "E1401",
-                format!(
-                    "safety profile '{}' is not in the registry",
-                    doc.safety.profile
-                ),
-            )]);
-        };
-        let bytes = std::fs::read(found.dir.join("package.yaml")).map_err(|e| {
+    // The safety profile is part of the closure; surface it as its own
+    // field too (§12 pins it visibly), at the closure-selected version.
+    let profile_prefix = format!("{}@", doc.safety.profile);
+    let safety_profile = packages
+        .iter()
+        .find(|p| p.id.starts_with(&profile_prefix))
+        .cloned()
+        .ok_or_else(|| {
             vec![Diagnostic::error(
-                "E1400",
-                format!("cannot hash {}: {e}", found.reference),
+                "E1401",
+                format!(
+                    "safety profile '{}' is not in the resolved closure",
+                    doc.safety.profile
+                ),
             )]
         })?;
-        LockedPackage {
-            id: found.reference.to_string(),
-            manifest_hash: sha256_hex(&bytes),
-        }
-    };
 
     Ok(Lockfile {
         lock_version: LOCK_VERSION,
@@ -220,7 +211,10 @@ mod tests {
         let main = &l.controllers["mainboard"];
         assert_eq!(main.resolved_resources["x_driver/connected_to"], "motor0");
         assert_eq!(main.resolved_resources["hotend_heater/output"], "heater0");
-        assert_eq!(l.packages.len(), 2);
+        // the full closure: 2 explicit pins + the transitive chip
+        // dependency + the implicit safety profile
+        assert_eq!(l.packages.len(), 4, "{:?}", l.packages);
+        assert!(l.packages.iter().any(|p| p.id == "chips/generic-mcu@1.2.0"));
         assert!(l
             .packages
             .iter()

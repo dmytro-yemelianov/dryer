@@ -119,8 +119,13 @@ pub struct LoadedPackage {
     pub manifest: Manifest,
 }
 
-/// A deterministic index over a local `packages/` directory
-/// (`packages/<namespace>/<name>/package.yaml`).
+/// A deterministic index over a local `packages/` directory.
+///
+/// Two layouts per package, mixable within one registry (spec §20.2
+/// local sources):
+/// - single-version: `packages/<ns>/<name>/package.yaml`
+/// - multi-version:  `packages/<ns>/<name>/<version>/package.yaml`
+///   (the directory name must equal the manifest version, E0606)
 #[derive(Debug, Default)]
 pub struct LocalRegistry {
     pub packages: Vec<LoadedPackage>,
@@ -129,11 +134,11 @@ pub struct LocalRegistry {
 
 impl LocalRegistry {
     /// Scan a directory tree. Deterministic: packages are returned in
-    /// lexicographic `namespace/name` order regardless of filesystem order.
-    /// Structural problems become diagnostics (`E06xx`), never panics.
+    /// lexicographic `namespace/name` then ascending-version order,
+    /// regardless of filesystem order. Structural problems become
+    /// diagnostics (`E06xx`), never panics.
     pub fn load(root: &Path) -> Self {
         let mut reg = LocalRegistry::default();
-        let mut dirs: Vec<PathBuf> = Vec::new();
         let namespaces = match std::fs::read_dir(root) {
             Ok(rd) => rd,
             Err(e) => {
@@ -144,26 +149,59 @@ impl LocalRegistry {
                 return reg;
             }
         };
+        let mut name_dirs: Vec<(String, String, PathBuf)> = Vec::new();
         for ns in namespaces.flatten() {
             if !ns.path().is_dir() {
                 continue;
             }
+            let ns_name = ns.file_name().to_string_lossy().into_owned();
             if let Ok(pkgs) = std::fs::read_dir(ns.path()) {
                 for p in pkgs.flatten() {
                     if p.path().is_dir() {
-                        dirs.push(p.path());
+                        name_dirs.push((
+                            ns_name.clone(),
+                            p.file_name().to_string_lossy().into_owned(),
+                            p.path(),
+                        ));
                     }
                 }
             }
         }
-        dirs.sort();
-        for dir in dirs {
-            reg.load_one(&dir);
+        name_dirs.sort();
+        for (ns, name, dir) in name_dirs {
+            if dir.join("package.yaml").is_file() {
+                reg.load_one(&dir, &ns, &name, None);
+            } else {
+                // multi-version layout: each subdirectory is one version
+                let mut versions: Vec<PathBuf> = std::fs::read_dir(&dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect();
+                if versions.is_empty() {
+                    reg.diagnostics.push(
+                        Diagnostic::error(
+                            "E0601",
+                            format!("{} has no package.yaml", dir.display()),
+                        )
+                        .suggest("every package requires package.yaml, README.md and LICENSE"),
+                    );
+                    continue;
+                }
+                versions.sort();
+                for vdir in versions {
+                    let v = vdir.file_name().map(|s| s.to_string_lossy().into_owned());
+                    reg.load_one(&vdir, &ns, &name, v.as_deref());
+                }
+            }
         }
+        reg.packages.sort_by(|a, b| a.reference.cmp(&b.reference));
         reg
     }
 
-    fn load_one(&mut self, dir: &Path) {
+    fn load_one(&mut self, dir: &Path, ns: &str, name: &str, dir_version: Option<&str>) {
         let manifest_path = dir.join("package.yaml");
         let text = match std::fs::read_to_string(&manifest_path) {
             Ok(t) => t,
@@ -197,16 +235,7 @@ impl LocalRegistry {
         }
         // Directory layout must agree with the declared identity.
         let declared = format!("{}/{}", manifest.package.namespace, manifest.package.name);
-        let actual = format!(
-            "{}/{}",
-            dir.parent()
-                .and_then(|p| p.file_name())
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            dir.file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        );
+        let actual = format!("{ns}/{name}");
         if declared != actual {
             self.diagnostics.push(Diagnostic::error(
                 "E0604",
@@ -216,6 +245,20 @@ impl LocalRegistry {
                 ),
             ));
             return;
+        }
+        // In the multi-version layout the directory name is the version.
+        if let Some(dv) = dir_version {
+            if dv != manifest.package.version.to_string() {
+                self.diagnostics.push(Diagnostic::error(
+                    "E0606",
+                    format!(
+                        "{}: version directory '{dv}' but the manifest declares {}",
+                        dir.display(),
+                        manifest.package.version
+                    ),
+                ));
+                return;
+            }
         }
         // Dependency ranges must parse now, not at resolve time.
         for (dep, d) in &manifest.dependencies {
@@ -241,10 +284,39 @@ impl LocalRegistry {
         });
     }
 
+    /// The highest available version of a package (deterministic default;
+    /// the resolver's constraint intersection narrows from here).
     pub fn find(&self, namespace: &str, name: &str) -> Option<&LoadedPackage> {
         self.packages
             .iter()
-            .find(|p| p.reference.namespace == namespace && p.reference.name == name)
+            .filter(|p| p.reference.namespace == namespace && p.reference.name == name)
+            .max_by(|a, b| a.reference.version.cmp(&b.reference.version))
+    }
+
+    /// One exact version.
+    pub fn find_version(
+        &self,
+        namespace: &str,
+        name: &str,
+        version: &semver::Version,
+    ) -> Option<&LoadedPackage> {
+        self.packages.iter().find(|p| {
+            p.reference.namespace == namespace
+                && p.reference.name == name
+                && p.reference.version == *version
+        })
+    }
+
+    /// All available versions of a package, ascending.
+    pub fn versions(&self, namespace: &str, name: &str) -> Vec<&semver::Version> {
+        let mut v: Vec<&semver::Version> = self
+            .packages
+            .iter()
+            .filter(|p| p.reference.namespace == namespace && p.reference.name == name)
+            .map(|p| &p.reference.version)
+            .collect();
+        v.sort();
+        v
     }
 }
 
@@ -290,6 +362,28 @@ mod tests {
         let req = window.requirement().unwrap();
         assert!(req.matches(&semver::Version::new(2, 5, 0)));
         assert!(!req.matches(&semver::Version::new(3, 0, 0)));
+    }
+
+    #[test]
+    fn multi_version_layout_loads_all_versions_and_find_prefers_highest() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
+        let reg = LocalRegistry::load(&root);
+        let versions = reg.versions("chips", "generic-mcu");
+        assert_eq!(
+            versions.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
+            vec!["1.0.0", "1.2.0"]
+        );
+        assert_eq!(
+            reg.find("chips", "generic-mcu").unwrap().reference.version,
+            semver::Version::new(1, 2, 0),
+            "find() returns the highest version"
+        );
+        assert!(reg
+            .find_version("chips", "generic-mcu", &semver::Version::new(1, 0, 0))
+            .is_some());
+        assert!(reg
+            .find_version("chips", "generic-mcu", &semver::Version::new(9, 9, 9))
+            .is_none());
     }
 
     #[test]
