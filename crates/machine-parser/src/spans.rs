@@ -68,10 +68,8 @@ impl SpanIndex {
             if let Some(hit) = self.get_span(&p) {
                 return Some(hit);
             }
-            match p.rfind(['.', '[']) {
-                Some(i) => p.truncate(i),
-                None => return None,
-            }
+            let i = p.rfind(['.', '['])?;
+            p.truncate(i);
         }
     }
 }
