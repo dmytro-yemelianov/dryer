@@ -97,10 +97,18 @@ tests exist and pass, not that a type was declared.
 
 ## Not yet decided / blocked
 
-- **Klipper compatibility provenance** (§23.5): no Klipper-derived code, tables or
-  fixtures may land until their licenses and provenance are recorded here.
+- **Klipper compatibility provenance** (§23.5): DRAFT record at
+  [`klipper-provenance.md`](klipper-provenance.md) — awaiting owner approval; the
+  no-Klipper-derived-content gate holds until its Status line reads Approved.
 - **Toolpath verification slot**: the job pipeline should name a program auditor
   (e.g. [dry](https://github.com/dmytro-yemelianov/dry)) as its pre-flight gate —
   a §23.6 to be written.
+- **Timing/bus-signal data model**: designed in
+  [`peripheral-mapping.md`](peripheral-mapping.md) (chip pin-function tables →
+  derived connector capabilities → E1310 step-timing, bus matching, timer
+  conflicts); implementation not started.
+- **Simulated controller** (§29 step 9): designed in [`simulator.md`](simulator.md)
+  (virtual clock, typed commands before wire frames, safety-envelope enforcement
+  from the resolved profile, drift-gated trace goldens); implementation not started.
 - Package schemas for chip/board/device/workflow kinds (§7–§9) land with the
   resolver slices that consume them; only `machine.schema.json` is normative today.
