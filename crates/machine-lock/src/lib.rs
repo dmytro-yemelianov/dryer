@@ -307,7 +307,7 @@ mod tests {
         // the full closure: 3 explicit pins + the transitive chip
         // dependency + the implicit safety profile
         assert_eq!(l.packages.len(), 5, "{:?}", l.packages);
-        assert!(l.packages.iter().any(|p| p.id == "chips/generic-mcu@1.4.0"));
+        assert!(l.packages.iter().any(|p| p.id == "chips/generic-mcu@1.5.0"));
         // the template-expanded component locks like any other
         assert_eq!(
             l.controllers["mainboard"].resolved_resources["y_driver/requires.connector"],

@@ -41,6 +41,12 @@
 //! for explicit claims, retiring the attribute table wherever a device
 //! exists.
 //!
+//! Slice 12 added **DMA routing and measured timing budgets**: device bus
+//! requirements may name DMA signals plus maximum worst-case latency and
+//! jitter; chip targets publish explicit routes and measured bounds. All are
+//! hard search/claim constraints, and accepted evidence is recorded on the
+//! assignment. DMA channel ownership/exclusivity remains a firmware concern.
+//!
 //! Deliberately NOT here yet: firmware partitioning.
 //! Lockfile generation lives in `dryer-machine-lock`.
 
@@ -165,6 +171,39 @@ struct TimerClaim {
     pin: String,
     path: String,
     source: Option<SourceSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BusMatch {
+    instance: String,
+    latency: Option<String>,
+    jitter: Option<String>,
+    dma_routes: BTreeMap<String, String>,
+}
+
+impl BusMatch {
+    fn constraints(&self, requirement: &dryer_package_model::device::BusReq) -> Vec<String> {
+        let mut constraints = vec![format!(
+            "{} bus via {}{}",
+            requirement.kind,
+            self.instance,
+            requirement
+                .min_frequency
+                .as_deref()
+                .map(|frequency| format!(" (>= {frequency})"))
+                .unwrap_or_default()
+        )];
+        if let (Some(actual), Some(limit)) = (&self.latency, &requirement.max_latency) {
+            constraints.push(format!("worst-case bus latency {actual} <= {limit}"));
+        }
+        if let (Some(actual), Some(limit)) = (&self.jitter, &requirement.max_jitter) {
+            constraints.push(format!("worst-case bus jitter {actual} <= {limit}"));
+        }
+        constraints.extend(self.dma_routes.iter().map(|(signal, channel)| {
+            format!("DMA route {}.{signal} via {channel}", self.instance)
+        }));
+        constraints
+    }
 }
 
 fn expanded_source(sources: &BTreeMap<String, SourceSpan>, path: &str) -> Option<SourceSpan> {
@@ -881,6 +920,28 @@ fn resolve_doc(
                 format!("connector kind == {expected_kind}"),
                 "exclusive ownership".to_string(),
             ];
+            if let Some(bus) = device_reqs
+                .get(&comp.kind)
+                .and_then(|requirement| requirement.bus.as_ref())
+            {
+                match bus_satisfied(chips.get(ctrl), &caps, bus) {
+                    Ok(matched) => constraints.extend(matched.constraints(bus)),
+                    Err(reason) => {
+                        diagnostics.push(diagnostic_at_source(
+                            Diagnostic::error(
+                                "E1315",
+                                format!(
+                                    "component '{cname}': device requires a {} bus on '{target}' — {reason}",
+                                    bus.kind
+                                ),
+                            ),
+                            &claim_path,
+                            claim_source.as_ref(),
+                        ));
+                        continue;
+                    }
+                }
+            }
             if max_step_rate.is_some() && expected_kind == "stepper_driver_socket" {
                 if let Some(step_funcs) = caps.get("step") {
                     let step_pin = connector.pins.get("step").cloned().unwrap_or_default();
@@ -1113,15 +1174,8 @@ fn resolve_doc(
             ));
         }
         if let Some(bus) = &required_bus {
-            if let Ok(instance) = bus_satisfied(chips.get(&ctrl_name as &str), &target_caps, bus) {
-                constraints.push(format!(
-                    "{} bus via {instance}{}",
-                    bus.kind,
-                    bus.min_frequency
-                        .as_deref()
-                        .map(|f| format!(" (>= {f})"))
-                        .unwrap_or_default()
-                ));
+            if let Ok(matched) = bus_satisfied(chips.get(&ctrl_name as &str), &target_caps, bus) {
+                constraints.extend(matched.constraints(bus));
             }
         }
         if max_step_rate.is_some() && required_kind == "stepper_driver_socket" {
@@ -1171,10 +1225,9 @@ fn resolve_doc(
     // --- Phase 8: electrical validation ---------------------------------
     // (a) a component's declared `current` draw must fit the connector's
     //     `max_current`; (b) a device's required voltage domains must
-    //     include the assigned connector's — silence never satisfies a
-    //     requirement. Timing budgets are deliberately absent: no board
-    //     maps connectors to timer peripherals yet, so there is nothing
-    //     truthful to validate against (stated in the roadmap).
+    //     include the assigned connector's; (c) bus frequency, measured
+    //     latency/jitter, and DMA routes must satisfy the device package.
+    //     Silence never satisfies a declared requirement.
     phases_run.push(Phase::ElectricalValidation);
     for (cname, comp) in &doc.components {
         let Some(dreq) = device_reqs.get(&comp.kind) else {
@@ -1398,14 +1451,14 @@ fn derive_pin_capabilities(
 }
 
 /// Does the connector (via its derived capabilities) satisfy a §9 bus
-/// requirement? Returns the matched bus instance, or the reason it fails.
-/// An undeclared bus frequency never satisfies a minimum — silence is not
-/// electrical compatibility.
+/// requirement? Returns the matched bus instance and its verified evidence,
+/// or the reason it fails. Undeclared frequency, timing, or DMA data never
+/// satisfies a corresponding hard requirement — silence is not compatibility.
 fn bus_satisfied(
     chip: Option<&dryer_package_model::chip::ChipPackageFile>,
     caps: &BTreeMap<String, Vec<String>>,
     req: &dryer_package_model::device::BusReq,
-) -> Result<String, String> {
+) -> Result<BusMatch, String> {
     let instance = caps.values().flatten().find_map(|tok| {
         let inst = tok.split('.').next().unwrap_or(tok);
         let family = inst.trim_end_matches(|c: char| c.is_ascii_digit());
@@ -1414,35 +1467,83 @@ fn bus_satisfied(
     let Some(instance) = instance else {
         return Err(format!("no {} function on any connector pin", req.kind));
     };
-    let Some(min_raw) = &req.min_frequency else {
-        return Ok(instance);
-    };
-    let min = Quantity::parse_as(min_raw, Dimension::Frequency).map_err(|e| e.to_string())?;
-    let Some(chip) = chip else {
-        return Err("no chip table to verify the bus frequency against".to_string());
-    };
-    let declared = chip
-        .peripherals
-        .spi
-        .iter()
-        .chain(&chip.peripherals.i2c)
-        .find(|b| b.id == instance)
-        .and_then(|b| b.max_frequency.as_ref());
-    match declared {
-        None => Err(format!(
-            "bus '{instance}' declares no max_frequency (required >= {min_raw})"
-        )),
-        Some(fq) => {
-            let f = Quantity::parse_as(fq, Dimension::Frequency).map_err(|e| e.to_string())?;
-            if f.value >= min.value {
-                Ok(instance)
-            } else {
-                Err(format!(
-                    "bus '{instance}' max_frequency {fq} < required {min_raw}"
-                ))
-            }
+    let needs_metadata = req.min_frequency.is_some()
+        || req.max_latency.is_some()
+        || req.max_jitter.is_some()
+        || !req.dma_signals.is_empty();
+    let declared = chip.and_then(|chip| chip.buses().find(|bus| bus.id == instance));
+    if needs_metadata && declared.is_none() {
+        return Err(format!(
+            "bus '{instance}' has no declared capability metadata"
+        ));
+    }
+
+    if let Some(min_raw) = &req.min_frequency {
+        let min = Quantity::parse_as(min_raw, Dimension::Frequency).map_err(|e| e.to_string())?;
+        let frequency = declared.and_then(|bus| bus.max_frequency.as_ref());
+        let Some(frequency) = frequency else {
+            return Err(format!(
+                "bus '{instance}' declares no max_frequency (required >= {min_raw})"
+            ));
+        };
+        let actual =
+            Quantity::parse_as(frequency, Dimension::Frequency).map_err(|e| e.to_string())?;
+        if actual.value < min.value {
+            return Err(format!(
+                "bus '{instance}' max_frequency {frequency} < required {min_raw}"
+            ));
         }
     }
+
+    let check_time = |field: &str,
+                      actual: Option<&String>,
+                      limit: Option<&String>|
+     -> Result<Option<String>, String> {
+        let Some(limit) = limit else { return Ok(None) };
+        let Some(actual) = actual else {
+            return Err(format!(
+                "bus '{instance}' declares no {field} (required <= {limit})"
+            ));
+        };
+        let actual_quantity =
+            Quantity::parse_as(actual, Dimension::Time).map_err(|e| e.to_string())?;
+        let limit_quantity =
+            Quantity::parse_as(limit, Dimension::Time).map_err(|e| e.to_string())?;
+        if actual_quantity.value > limit_quantity.value {
+            return Err(format!(
+                "bus '{instance}' {field} {actual} > required maximum {limit}"
+            ));
+        }
+        Ok(Some(actual.clone()))
+    };
+    let latency = check_time(
+        "worst_case_latency",
+        declared.and_then(|bus| bus.worst_case_latency.as_ref()),
+        req.max_latency.as_ref(),
+    )?;
+    let jitter = check_time(
+        "worst_case_jitter",
+        declared.and_then(|bus| bus.worst_case_jitter.as_ref()),
+        req.max_jitter.as_ref(),
+    )?;
+
+    let mut dma_routes = BTreeMap::new();
+    if !req.dma_signals.is_empty() {
+        let chip = chip.ok_or_else(|| "no chip table to verify DMA routing against".to_string())?;
+        for signal in &req.dma_signals {
+            let route = format!("{instance}.{signal}");
+            let Some(channel) = chip.dma_channel_for_route(&route) else {
+                return Err(format!("no DMA channel routes '{route}'"));
+            };
+            dma_routes.insert(signal.clone(), channel.id.clone());
+        }
+    }
+    Ok(BusMatch {
+        instance,
+        latency,
+        jitter,
+        dma_routes,
+    })
 }
 
 /// v0.1 claim-compatibility table: which connector kind each claiming
@@ -1838,6 +1939,81 @@ mod tests {
         );
     }
 
+    /// DMA routes and measured timing bounds are hard requirements and
+    /// become human-readable assignment provenance when accepted.
+    #[test]
+    fn dma_and_timing_budgets_are_matched_and_recorded() {
+        let source = fixture().replace(
+            "kinematics:",
+            "  stream_sensor:\n    type: dma-stream-sensor\n\nkinematics:",
+        );
+        let outcome = resolve_source(&source, &registry());
+        assert!(outcome.is_ok(), "diagnostics: {:#?}", outcome.diagnostics);
+        let graph = outcome.resolved.unwrap();
+        let assignment = &graph.assignments["stream_sensor"][0];
+        assert_eq!(assignment.resource.0, "mainboard.accel0");
+        for expected in [
+            "worst-case bus latency 20 us <= 50 us",
+            "worst-case bus jitter 3 us <= 10 us",
+            "DMA route spi1.rx via dma1.ch0",
+        ] {
+            assert!(
+                assignment
+                    .constraints_applied
+                    .iter()
+                    .any(|constraint| constraint == expected),
+                "missing '{expected}' in {:?}",
+                assignment.constraints_applied
+            );
+        }
+    }
+
+    #[test]
+    fn latency_jitter_and_dma_failures_name_the_missing_budget() {
+        let registry = registry();
+        let chip = registry
+            .find("chips", "generic-mcu")
+            .unwrap()
+            .chip_payload()
+            .unwrap();
+        let caps = BTreeMap::from([
+            ("sck".to_string(), vec!["spi2.sck".to_string()]),
+            ("miso".to_string(), vec!["spi2.miso".to_string()]),
+        ]);
+        let requirement =
+            |max_latency, max_jitter, dma_signals| dryer_package_model::device::BusReq {
+                kind: "spi".to_string(),
+                min_frequency: None,
+                dma_signals,
+                max_latency,
+                max_jitter,
+            };
+
+        let latency = bus_satisfied(
+            Some(&chip),
+            &caps,
+            &requirement(Some("50 us".to_string()), None, Vec::new()),
+        )
+        .unwrap_err();
+        assert!(latency.contains("worst_case_latency 80 us"), "{latency}");
+
+        let jitter = bus_satisfied(
+            Some(&chip),
+            &caps,
+            &requirement(None, Some("10 us".to_string()), Vec::new()),
+        )
+        .unwrap_err();
+        assert!(jitter.contains("worst_case_jitter 20 us"), "{jitter}");
+
+        let dma = bus_satisfied(
+            Some(&chip),
+            &caps,
+            &requirement(None, None, vec!["rx".to_string()]),
+        )
+        .unwrap_err();
+        assert!(dma.contains("no DMA channel routes 'spi2.rx'"), "{dma}");
+    }
+
     /// Pin capabilities ride every assignment: the explicit x_driver claim
     /// carries the chip functions behind motor0's pins.
     #[test]
@@ -1957,8 +2133,8 @@ mod tests {
         assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
         let pkgs = o.resolved.unwrap().packages;
         assert!(
-            pkgs.contains(&"chips/generic-mcu@1.4.0".to_string()),
-            "transitive dep at max satisfying (1.3.0 supersedes 1.2.0): {pkgs:?}"
+            pkgs.contains(&"chips/generic-mcu@1.5.0".to_string()),
+            "transitive dep at max satisfying (1.5.0 supersedes 1.4.0): {pkgs:?}"
         );
         assert!(pkgs.contains(&"boards/example-mainboard@1.0.0".to_string()));
         assert!(pkgs.contains(&"safety-profiles/desktop-fdm@1.0.0".to_string()));

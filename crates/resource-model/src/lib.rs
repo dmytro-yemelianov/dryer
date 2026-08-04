@@ -72,6 +72,8 @@ pub enum Constraint {
     ConnectorOccupancy { connector: String },
     /// Latency budget in nanoseconds for scheduled operations.
     LatencyBudgetNs { max_ns: u64 },
+    /// Jitter budget in nanoseconds for scheduled operations.
+    JitterBudgetNs { max_ns: u64 },
     /// Memory/flash budget in bytes.
     MemoryBudget { max_bytes: u64 },
     /// Ownership mode this requirement insists on.
@@ -187,9 +189,16 @@ mod tests {
         let req = ResourceRequirement {
             requested_by: "x_motor".into(),
             kind: ResourceKind::TimerChannel,
-            constraints: vec![Constraint::TimerCoupling {
-                timer: "tim1".into(),
-            }],
+            constraints: vec![
+                Constraint::TimerCoupling {
+                    timer: "tim1".into(),
+                },
+                Constraint::DmaRoute {
+                    peripheral: "spi1.rx".into(),
+                },
+                Constraint::LatencyBudgetNs { max_ns: 50_000 },
+                Constraint::JitterBudgetNs { max_ns: 10_000 },
+            ],
             preferred: vec![Preference {
                 weight: 10,
                 description: "prefer advanced timer".into(),
