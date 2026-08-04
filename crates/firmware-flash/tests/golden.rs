@@ -1,4 +1,6 @@
-use dryer_firmware_flash::{plan_dry_run, ArtifactSpec, DiscoveredUsbDevice, DryRunRequest};
+use dryer_firmware_flash::{
+    plan_dry_run, ArtifactSpec, DiscoveredUsbDevice, DryRunRequest, PlanError,
+};
 use dryer_machine_lock::Lockfile;
 use dryer_package_model::LocalRegistry;
 use std::path::Path;
@@ -79,4 +81,66 @@ fn ambiguity_and_artifact_drift_are_both_blocking() {
     assert_eq!(plan.blocked_reasons.len(), 2);
     assert!(plan.blocked_reasons[0].contains("2 USB devices match"));
     assert!(plan.blocked_reasons[1].contains("sha256"));
+}
+
+#[test]
+fn package_companion_file_drift_is_blocking() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let lock = Lockfile::from_yaml(
+        &std::fs::read_to_string(root.join("examples/minimal-cartesian/machine.lock")).unwrap(),
+    )
+    .unwrap();
+    let mut registry = LocalRegistry::load(&root.join("packages"));
+    let board = registry
+        .packages
+        .iter_mut()
+        .find(|package| package.reference.to_string() == "boards/example-mainboard@1.0.0")
+        .unwrap();
+    let source_dir = board.dir.clone();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let changed_dir = std::env::temp_dir().join(format!(
+        "dryer-flash-package-drift-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&changed_dir).unwrap();
+    for file in ["package.yaml", "README.md", "LICENSE"] {
+        std::fs::copy(source_dir.join(file), changed_dir.join(file)).unwrap();
+    }
+    std::fs::write(changed_dir.join("README.md"), b"changed after locking\n").unwrap();
+    board.dir = changed_dir.clone();
+
+    let inventory: Vec<DiscoveredUsbDevice> = serde_json::from_str(
+        &std::fs::read_to_string(
+            root.join("examples/minimal-cartesian/usb-inventory.fixture.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let artifact = root.join("examples/minimal-cartesian/firmware.fixture.bin");
+    let error = plan_dry_run(DryRunRequest {
+        controller: "mainboard",
+        lock: &lock,
+        registry: &registry,
+        discovered_devices: &inventory,
+        artifact: ArtifactSpec {
+            path: &artifact,
+            plan_path: "examples/minimal-cartesian/firmware.fixture.bin",
+            expected_sha256:
+                "sha256:6c92abd61b162679e332cdad7b2a7753d1888de5fecb3363331207ca99d73c2a",
+            signature: None,
+        },
+        expected_current_firmware: "dryer-simulator/0.1.0",
+    })
+    .unwrap_err();
+    match error {
+        PlanError::RegistryDrift(message) => {
+            assert!(message.contains("package content"), "{message}")
+        }
+        other => panic!("expected package content drift, got {other}"),
+    }
+
+    std::fs::remove_dir_all(changed_dir).unwrap();
 }

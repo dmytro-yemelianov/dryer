@@ -24,3 +24,4 @@ serde_json = "1"
 serde_yaml = "0.9"
 semver = { version = "1", features = ["serde"] }
 nusb = "=0.1.14"
+sha2 = "0.10"

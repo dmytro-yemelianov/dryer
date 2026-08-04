@@ -363,6 +363,21 @@ pub fn plan_dry_run(request: DryRunRequest<'_>) -> Result<FlashPlan, PlanError> 
             board_lock.id, board_lock.manifest_hash, observed_manifest_hash
         )));
     }
+    if request.lock.lock_version >= 2 && board_lock.content_hash.is_empty() {
+        return Err(PlanError::InvalidLock(format!(
+            "{} has no package content hash in lockfile v{}",
+            board_lock.id, request.lock.lock_version
+        )));
+    }
+    if !board_lock.content_hash.is_empty() {
+        let observed_content_hash = package.content_hash().map_err(PlanError::RegistryIo)?;
+        if observed_content_hash != board_lock.content_hash {
+            return Err(PlanError::RegistryDrift(format!(
+                "{} package content expected {}, observed {}",
+                board_lock.id, board_lock.content_hash, observed_content_hash
+            )));
+        }
+    }
 
     let board = package.board_payload().map_err(|diagnostics| {
         PlanError::InvalidBoardMetadata(

@@ -13,7 +13,7 @@ dryer-package-model = { path = "../package-model" }
 nusb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = "0.10"
+sha2 = { workspace = true }
 
 [dev-dependencies]
 serde_yaml = { workspace = true }

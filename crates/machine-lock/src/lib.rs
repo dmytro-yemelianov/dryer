@@ -1,14 +1,12 @@
 //! `machine.lock` (spec §12, §29 step 7): a generated, canonical, hashed
 //! capture of one successful resolution.
 //!
-//! v0.1 field scope, stated honestly: exact package versions + manifest
-//! hashes, the machine-source hash, resolver identity, the pinned safety
-//! profile, and per-controller resolved resources. Deferred to later
-//! slices (each needs machinery that does not exist yet): registry source
-//! identity, firmware target triples and build profiles, protocol
-//! versions, feature flags — and the package hash covers `package.yaml`
-//! only, not the full content tree (§6.6's content digest arrives with
-//! the registry).
+//! v0.2 field scope, stated honestly: exact package versions + portable
+//! full-content digests (§6.6), manifest hashes, the machine-source hash,
+//! resolver identity, the pinned safety profile, and per-controller resolved
+//! resources. Deferred to later slices (each needs machinery that does not
+//! exist yet): registry source identity, firmware target triples and build
+//! profiles, protocol versions, and feature flags.
 //!
 //! Canonical form: JSON with every map a `BTreeMap`, so byte-identical
 //! lockfiles for identical inputs. The on-disk file is YAML for humans;
@@ -21,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-pub const LOCK_VERSION: u32 = 1;
+pub const LOCK_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Lockfile {
@@ -41,9 +39,13 @@ pub struct Lockfile {
 pub struct LockedPackage {
     /// `namespace/name@version`.
     pub id: String,
-    /// sha256 of the package's `package.yaml` bytes (manifest-only; see
-    /// the module docs for the §6.6 full-content-digest deferral).
+    /// sha256 of the package's `package.yaml` bytes, retained for focused
+    /// manifest drift diagnostics.
     pub manifest_hash: String,
+    /// Portable sha256 over every path and regular-file byte in the package.
+    /// Empty only when reading a legacy v1 lockfile.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content_hash: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -90,9 +92,16 @@ pub fn lock(
                 format!("cannot hash {}: {e}", found.reference),
             )]
         })?;
+        let content_hash = found.content_hash().map_err(|e| {
+            vec![Diagnostic::error(
+                "E1400",
+                format!("cannot hash package content for {}: {e}", found.reference),
+            )]
+        })?;
         packages.push(LockedPackage {
             id: found.reference.to_string(),
             manifest_hash: sha256_hex(&manifest_bytes),
+            content_hash,
         });
     }
     packages.sort_by(|a, b| a.id.cmp(&b.id));
@@ -228,9 +237,14 @@ mod tests {
             .packages
             .iter()
             .all(|p| p.manifest_hash.starts_with("sha256:")));
+        assert!(l
+            .packages
+            .iter()
+            .all(|p| p.content_hash.starts_with("sha256:")));
         assert!(l.machine_hash.starts_with("sha256:"));
         assert_eq!(l.safety_profile.id, "safety-profiles/desktop-fdm@1.0.0");
         assert!(l.safety_profile.manifest_hash.starts_with("sha256:"));
+        assert!(l.safety_profile.content_hash.starts_with("sha256:"));
     }
 
     #[test]
@@ -243,5 +257,27 @@ mod tests {
         let reformatted = format!("{source}\n# trailing comment\n");
         let b = lock(&reformatted, &registry, &resolved).unwrap();
         assert_ne!(a.machine_hash, b.machine_hash);
+    }
+
+    #[test]
+    fn legacy_v1_locks_without_content_hashes_still_parse() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let current = lock(&source, &registry, &resolved).unwrap().to_yaml();
+        let legacy = current
+            .replace("lock_version: 2", "lock_version: 1")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("content_hash:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed = Lockfile::from_yaml(&legacy).unwrap();
+        assert_eq!(parsed.lock_version, 1);
+        assert!(parsed
+            .packages
+            .iter()
+            .all(|package| package.content_hash.is_empty()));
+        assert!(parsed.safety_profile.content_hash.is_empty());
     }
 }
