@@ -55,7 +55,10 @@
 
 mod capability;
 mod diagnostics;
+mod expansion;
 mod model;
+mod packages;
+mod targets;
 #[cfg(test)]
 mod tests;
 
@@ -64,14 +67,13 @@ use capability::{
     safety_target_resources, sensor_resource_on_controller,
 };
 use diagnostics::{diagnostic_at_source, expanded_source, locate_diagnostics, related_to_claim};
-use dryer_machine_parser::spans::SpanIndex;
-use dryer_machine_schema::{Diagnostic, Dimension, MachineDoc, Quantity, Severity, SourceSpan};
-use dryer_package_model::{board::BoardPackageFile, LocalRegistry, PackageRef};
+use dryer_machine_schema::{Diagnostic, Dimension, MachineDoc, Quantity, Severity};
+use dryer_package_model::LocalRegistry;
 use dryer_resource_model::ResourceId;
 pub use model::{
     Assignment, ControllerBuildPlan, ControllerSafeState, Phase, ResolveOutcome, ResolvedGraph,
 };
-use model::{RequirementConstraint, ResourceClaim, TimerClaim};
+use model::{ResourceClaim, TimerClaim};
 use std::collections::BTreeMap;
 
 /// Resolve a machine manifest source against a local package registry.
@@ -129,326 +131,18 @@ fn resolve_doc(
     // range (§11.4 stable selection rule); a machine pin is absolute and
     // conflicts with it are errors, never silent overrides.
     phases_run.push(Phase::PackageDependencies);
-    let mut pins: BTreeMap<String, semver::Version> = BTreeMap::new();
-    let mut pin_paths: BTreeMap<String, String> = BTreeMap::new();
-    for (index, pkg) in doc.packages.iter().enumerate() {
-        // syntax already validated by the parser
-        if let Ok(r) = PackageRef::parse(pkg) {
-            let path = format!("{}/{}", r.namespace, r.name);
-            pins.insert(path.clone(), r.version);
-            pin_paths.insert(path, format!("packages[{index}]"));
-        }
-    }
-    let mut implicit_roots: std::collections::BTreeSet<String> = doc
-        .controllers
-        .values()
-        .map(|c| c.board.clone())
-        .filter(|b| b.contains('/'))
-        .collect();
-    if doc.safety.profile.contains('/') {
-        implicit_roots.insert(doc.safety.profile.clone());
-    }
-
-    let package_spans: BTreeMap<String, SpanIndex> = registry
-        .packages
-        .iter()
-        .filter_map(|package| {
-            let source = std::fs::read_to_string(package.dir.join("package.yaml")).ok()?;
-            let reference = package.reference.to_string();
-            let document = format!("package:{reference}/package.yaml");
-            Some((reference, SpanIndex::build_named(&source, document)))
-        })
-        .collect();
-
-    type Constraints = BTreeMap<String, Vec<RequirementConstraint>>;
-    let mut constraints: Constraints = BTreeMap::new();
-    let mut chosen: BTreeMap<String, semver::Version> = BTreeMap::new();
-    let mut phase_errs: Vec<Diagnostic> = Vec::new();
-    let mut phase_warns: Vec<Diagnostic> = Vec::new();
-    let mut converged = false;
-    for _round in 0..64 {
-        let mut next: BTreeMap<String, semver::Version> = BTreeMap::new();
-        let mut errs: Vec<Diagnostic> = Vec::new();
-        let mut warns: Vec<Diagnostic> = Vec::new();
-        let paths: std::collections::BTreeSet<String> = pins
-            .keys()
-            .chain(implicit_roots.iter())
-            .chain(constraints.keys())
-            .cloned()
-            .collect();
-        for path in &paths {
-            let Some((ns, name)) = path.split_once('/') else {
-                continue;
-            };
-            let available = registry.versions(ns, name);
-            if available.is_empty() {
-                errs.push(
-                    Diagnostic::error("E1100", format!("package '{path}' is not in the registry"))
-                        .at("packages"),
-                );
-                continue;
-            }
-            let reqs = constraints.get(path).cloned().unwrap_or_default();
-            if let Some(pin) = pins.get(path) {
-                if !available.contains(&pin) {
-                    errs.push(
-                        Diagnostic::error(
-                            "E1101",
-                            format!(
-                                "package '{path}' pinned at {pin} but the registry has {}",
-                                available
-                                    .iter()
-                                    .map(|v| v.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ),
-                        )
-                        .at(pin_paths
-                            .get(path)
-                            .cloned()
-                            .unwrap_or_else(|| "packages".to_string())),
-                    );
-                    continue;
-                }
-                let mut excluded = false;
-                for constraint in &reqs {
-                    if !constraint.requirement.matches(pin) {
-                        excluded = true;
-                        let mut diagnostic = Diagnostic::error(
-                            "E1103",
-                            format!(
-                                "'{}' requires '{path}' {} but the machine pins {pin}",
-                                constraint.required_by, constraint.requirement
-                            ),
-                        )
-                        .at(pin_paths
-                            .get(path)
-                            .cloned()
-                            .unwrap_or_else(|| "packages".to_string()));
-                        if let Some(source) = &constraint.source {
-                            diagnostic = diagnostic.related_source(
-                                format!(
-                                    "requirement from '{}' declared here",
-                                    constraint.required_by
-                                ),
-                                source.clone(),
-                            );
-                        }
-                        errs.push(diagnostic);
-                    }
-                }
-                if !excluded {
-                    next.insert(path.clone(), pin.clone());
-                }
-            } else {
-                let sat: Vec<&semver::Version> = available
-                    .iter()
-                    .copied()
-                    .filter(|v| reqs.iter().all(|c| c.requirement.matches(v)))
-                    .collect();
-                match sat.last() {
-                    Some(v) => {
-                        if reqs.is_empty() && implicit_roots.contains(path) {
-                            warns.push(Diagnostic::warning(
-                                "E1106",
-                                format!(
-                                    "'{path}' is not version-pinned; selected {v} (highest available)"
-                                ),
-                            ));
-                        }
-                        next.insert(path.clone(), (*v).clone());
-                    }
-                    None => {
-                        let mut diagnostic = Diagnostic::error(
-                            "E1104",
-                            format!(
-                                "no version of '{path}' satisfies {}; available: {}",
-                                reqs.iter()
-                                    .map(|c| format!("'{}' ({})", c.required_by, c.requirement))
-                                    .collect::<Vec<_>>()
-                                    .join(" and "),
-                                available
-                                    .iter()
-                                    .map(|v| v.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ),
-                        );
-                        let mut has_primary_source = false;
-                        for constraint in &reqs {
-                            let message = format!(
-                                "'{}' requires '{path}' {}",
-                                constraint.required_by, constraint.requirement
-                            );
-                            if let Some(source) = &constraint.source {
-                                if has_primary_source {
-                                    diagnostic = diagnostic.related_source(message, source.clone());
-                                } else {
-                                    diagnostic = diagnostic.with_source(source.clone());
-                                    has_primary_source = true;
-                                }
-                            }
-                        }
-                        errs.push(diagnostic);
-                    }
-                }
-            }
-        }
-        // Re-derive constraints from the manifests of the chosen set.
-        let mut new_constraints: Constraints = BTreeMap::new();
-        for (path, ver) in &next {
-            let (ns, name) = path.split_once('/').expect("paths are ns/name");
-            if let Some(p) = registry.find_version(ns, name, ver) {
-                for (dep, d) in &p.manifest.dependencies {
-                    if let Ok(req) = d.requirement() {
-                        let source = package_spans
-                            .get(&p.reference.to_string())
-                            .and_then(|index| index.locate_span(&format!("dependencies.{dep}")));
-                        new_constraints.entry(dep.clone()).or_default().push(
-                            RequirementConstraint {
-                                required_by: path.clone(),
-                                requirement: req,
-                                source,
-                            },
-                        );
-                    }
-                }
-            }
-        }
-        let stable = next == chosen && new_constraints == constraints;
-        chosen = next;
-        constraints = new_constraints;
-        phase_errs = errs;
-        phase_warns = warns;
-        if stable {
-            converged = true;
-            break;
-        }
-    }
-    if !converged && phase_errs.is_empty() {
-        phase_errs.push(Diagnostic::error(
-            "E1107",
-            "dependency resolution did not converge (cyclic version constraints?)",
-        ));
-    }
-    diagnostics.extend(phase_warns);
-    diagnostics.extend(phase_errs);
+    let packages = packages::PackageSelection::resolve(doc, registry, diagnostics);
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return fail(std::mem::take(diagnostics), phases_run.clone());
     }
-    // The closure: every package the machine uses, with its selected version.
-    let select = |path: &str| -> Option<&dryer_package_model::LoadedPackage> {
-        let (ns, name) = path.split_once('/')?;
-        match chosen.get(path) {
-            Some(v) => registry.find_version(ns, name, v),
-            None => registry.find(ns, name),
-        }
-    };
-    let closure_refs: Vec<String> = chosen
-        .iter()
-        .map(|(path, v)| format!("{path}@{v}"))
-        .collect();
 
     // --- Phase 4: package loading (board payloads per controller) ------
     phases_run.push(Phase::PackageLoading);
-    let mut boards: BTreeMap<String, BoardPackageFile> = BTreeMap::new();
-    let mut chips: BTreeMap<String, dryer_package_model::chip::ChipPackageFile> = BTreeMap::new();
-    let mut chip_refs: BTreeMap<String, String> = BTreeMap::new();
-    for (cname, ctrl) in &doc.controllers {
-        let Some((ns, name)) = ctrl.board.split_once('/') else {
-            diagnostics.push(
-                Diagnostic::error(
-                    "E1110",
-                    format!(
-                        "controller '{cname}': board '{}' must be 'namespace/name'",
-                        ctrl.board
-                    ),
-                )
-                .at(format!("controllers.{cname}.board")),
-            );
-            continue;
-        };
-        let _ = (ns, name); // shape validated above; selection is closure-aware
-        match select(&ctrl.board) {
-            None => diagnostics.push(
-                Diagnostic::error(
-                    "E1111",
-                    format!(
-                        "controller '{cname}': board package '{}' is not in the registry",
-                        ctrl.board
-                    ),
-                )
-                .at(format!("controllers.{cname}.board")),
-            ),
-            Some(pkg) => match pkg.board_payload() {
-                Ok(payload) => {
-                    // transport must exist on the board
-                    if !payload.transports.contains_key(&ctrl.transport.kind) {
-                        diagnostics.push(
-                            Diagnostic::error(
-                                "E1120",
-                                format!(
-                                    "controller '{cname}': board '{}' has no '{}' transport",
-                                    ctrl.board, ctrl.transport.kind
-                                ),
-                            )
-                            .at(format!("controllers.{cname}.transport")),
-                        );
-                    }
-                    // Peripheral mapping (docs/peripheral-mapping.md): join
-                    // the board's pins to the chip's pin-function table.
-                    if let Some(chip_ref) = payload.chip.clone() {
-                        let chip_pkg = select(&chip_ref);
-                        if let Some(chip_pkg) = chip_pkg {
-                            if !chosen.contains_key(&chip_ref) {
-                                diagnostics.push(Diagnostic::warning(
-                                    "E1311",
-                                    format!(
-                                        "board '{}' chip '{chip_ref}' is not in the dependency closure; using {} (highest available)",
-                                        ctrl.board, chip_pkg.reference.version
-                                    ),
-                                ));
-                            }
-                            match chip_pkg.chip_payload() {
-                                Ok(chip) => {
-                                    // A chip without a pin table disables the
-                                    // wiring check — no data, no verdict.
-                                    if !chip.pin_functions.is_empty() {
-                                        for (cid, conn) in &payload.connectors {
-                                            for pin in conn.pins.values().chain(conn.pin.iter()) {
-                                                if !chip.pin_functions.contains_key(pin) {
-                                                    diagnostics.push(Diagnostic::error(
-                                                        "E1312",
-                                                        format!(
-                                                            "board '{}' connector '{cid}' wires pin {pin}, which chip '{chip_ref}' does not declare",
-                                                            ctrl.board
-                                                        ),
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                    }
-                                    chip_refs.insert(cname.clone(), chip_pkg.reference.to_string());
-                                    chips.insert(cname.clone(), chip);
-                                }
-                                Err(errs) => diagnostics.extend(errs),
-                            }
-                        } else {
-                            diagnostics.push(Diagnostic::error(
-                                "E1313",
-                                format!(
-                                    "board '{}' references chip '{chip_ref}', which is not in the registry",
-                                    ctrl.board
-                                ),
-                            ));
-                        }
-                    }
-                    boards.insert(cname.clone(), payload);
-                }
-                Err(errs) => diagnostics.extend(errs),
-            },
-        }
-    }
+    let targets::ControllerTargets {
+        boards,
+        chips,
+        chip_refs,
+    } = targets::load(doc, &packages, diagnostics);
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return fail(std::mem::take(diagnostics), phases_run.clone());
     }
@@ -461,96 +155,10 @@ fn resolve_doc(
     // and shadowing is surfaced as an Info diagnostic so the expanded
     // graph stays explainable.
     phases_run.push(Phase::GraphExpansion);
-    let mut expanded = doc.clone();
-    // Machine-style expanded paths -> exact package-template source. Keeping
-    // this beside the expanded graph lets later phases report the document
-    // that actually introduced a component instead of asking the machine's
-    // SpanIndex to locate a path that never existed there.
-    let mut expanded_sources: BTreeMap<String, SourceSpan> = BTreeMap::new();
-    for path in chosen.keys() {
-        let Some(pkg) = select(path) else { continue };
-        if pkg.kind != dryer_package_model::PackageKind::Machine {
-            continue;
-        }
-        let template = match pkg.machine_payload() {
-            Ok(p) => match p.template {
-                Some(t) => t,
-                None => continue,
-            },
-            Err(errs) => {
-                diagnostics.extend(errs);
-                continue;
-            }
-        };
-        for (cid, comp) in template.components {
-            if !dryer_machine_schema::valid_identifier(&cid) {
-                diagnostics.push(Diagnostic::error(
-                    "E1131",
-                    format!("template component '{cid}' from '{path}' is not a valid identifier"),
-                ));
-                continue;
-            }
-            match expanded.components.entry(cid.clone()) {
-                std::collections::btree_map::Entry::Occupied(_) => {
-                    diagnostics.push(Diagnostic::info(
-                        "I1132",
-                        format!("source component '{cid}' shadows the template from '{path}'"),
-                    ));
-                }
-                std::collections::btree_map::Entry::Vacant(e) => {
-                    diagnostics.push(Diagnostic::info(
-                        "I1133",
-                        format!("component '{cid}' expanded from '{path}'"),
-                    ));
-                    if let Some(index) = package_spans.get(&pkg.reference.to_string()) {
-                        let template_path = format!("template.components.{cid}");
-                        let expanded_path = format!("components.{cid}");
-                        if let Some(source) = index.get_span(&template_path) {
-                            expanded_sources.insert(expanded_path.clone(), source);
-                        }
-                        for attr in comp.attributes.keys() {
-                            if let Some(source) = index.get_span(&format!("{template_path}.{attr}"))
-                            {
-                                expanded_sources.insert(format!("{expanded_path}.{attr}"), source);
-                            }
-                        }
-                    }
-                    e.insert(comp);
-                }
-            }
-        }
-        if let Some(k) = template.kinematics {
-            if let Some(kind) = k.kind {
-                if kind != expanded.kinematics.kind {
-                    diagnostics.push(Diagnostic::warning(
-                        "E1130",
-                        format!(
-                            "machine class '{path}' assumes {kind} kinematics but the source declares {}",
-                            expanded.kinematics.kind
-                        ),
-                    ));
-                }
-            }
-            for (limit, value) in k.limits {
-                if let std::collections::btree_map::Entry::Vacant(e) =
-                    expanded.kinematics.limits.entry(limit.clone())
-                {
-                    if Quantity::parse(&value).is_err() {
-                        diagnostics.push(Diagnostic::error(
-                            "E1134",
-                            format!("template limit '{limit}' from '{path}': '{value}' is not a valid quantity"),
-                        ));
-                    } else {
-                        diagnostics.push(Diagnostic::info(
-                            "I1133",
-                            format!("kinematics limit '{limit}' defaulted from '{path}'"),
-                        ));
-                        e.insert(value);
-                    }
-                }
-            }
-        }
-    }
+    let expansion::ExpandedGraph {
+        doc: expanded,
+        sources: expanded_sources,
+    } = expansion::expand(doc, &packages, diagnostics);
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return fail(std::mem::take(diagnostics), phases_run.clone());
     }
@@ -571,7 +179,7 @@ fn resolve_doc(
         if device_reqs.contains_key(&comp.kind) {
             continue;
         }
-        let Some(dev) = select(&format!("devices/{}", comp.kind)) else {
+        let Some(dev) = packages.select(&format!("devices/{}", comp.kind)) else {
             continue;
         };
         let Ok(payload) = dev.device_payload() else {
@@ -597,7 +205,7 @@ fn resolve_doc(
     phases_run.push(Phase::ResourceAllocation);
 
     let mut resolved = ResolvedGraph {
-        packages: closure_refs,
+        packages: packages.closure_refs().to_vec(),
         ..ResolvedGraph::default()
     };
     // connector -> first claimant, for exclusivity conflicts
@@ -1169,7 +777,7 @@ fn resolve_doc(
         );
         return fail(std::mem::take(diagnostics), phases_run.clone());
     }
-    let safety_profile = match select(&doc.safety.profile) {
+    let safety_profile = match packages.select(&doc.safety.profile) {
         None => {
             diagnostics.push(
                 Diagnostic::error(
@@ -1434,7 +1042,7 @@ fn resolve_doc(
             );
             continue;
         };
-        let Some(board_version) = chosen.get(&controller.board) else {
+        let Some(board_version) = packages.version(&controller.board) else {
             diagnostics.push(
                 Diagnostic::error(
                     "E1602",
