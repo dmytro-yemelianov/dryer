@@ -5,6 +5,23 @@ use dryer_machine_lock::Lockfile;
 use dryer_package_model::LocalRegistry;
 use std::path::Path;
 
+fn copy_tree(source: &Path, destination: &Path) {
+    std::fs::create_dir_all(destination).unwrap();
+    for entry in std::fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type().unwrap();
+        if file_type.is_dir() {
+            copy_tree(&source_path, &destination_path);
+        } else if file_type.is_file() {
+            std::fs::copy(source_path, destination_path).unwrap();
+        } else {
+            panic!("fixture package contains an unsupported filesystem entry");
+        }
+    }
+}
+
 #[test]
 fn minimal_cartesian_flash_plan_is_drift_gated() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -105,10 +122,7 @@ fn package_companion_file_drift_is_blocking() {
         "dryer-flash-package-drift-{}-{nonce}",
         std::process::id()
     ));
-    std::fs::create_dir_all(&changed_dir).unwrap();
-    for file in ["package.yaml", "README.md", "LICENSE"] {
-        std::fs::copy(source_dir.join(file), changed_dir.join(file)).unwrap();
-    }
+    copy_tree(&source_dir, &changed_dir);
     std::fs::write(changed_dir.join("README.md"), b"changed after locking\n").unwrap();
     board.dir = changed_dir.clone();
 

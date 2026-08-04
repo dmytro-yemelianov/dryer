@@ -18,10 +18,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 
 const CONTENT_HASH_DOMAIN: &[u8] = b"dryer-package-content-v1\0";
+const SNAPSHOT_VERIFY_RETRIES: usize = 3;
 
 /// Package kinds the registry supports (spec §6.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,9 +128,52 @@ pub struct LoadedPackage {
 }
 
 impl LoadedPackage {
+    /// Read one byte-verified snapshot of the complete package tree.
+    pub fn snapshot(&self) -> io::Result<PackageSnapshot> {
+        package_snapshot(&self.dir)
+    }
+
     /// A portable digest of every regular file under this package root.
     pub fn content_hash(&self) -> io::Result<String> {
-        package_content_hash(&self.dir)
+        Ok(self.snapshot()?.content_hash())
+    }
+}
+
+/// One stable, in-memory view of every regular file in a package.
+///
+/// Manifest and full-content hashes derived from this value necessarily refer
+/// to the same bytes. Construction compares consecutive complete reads and
+/// retries when paths or bytes change, including same-length rewrites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageSnapshot {
+    files: BTreeMap<String, Vec<u8>>,
+}
+
+impl PackageSnapshot {
+    /// Exact `package.yaml` bytes from this snapshot.
+    pub fn manifest_bytes(&self) -> io::Result<&[u8]> {
+        self.files
+            .get("package.yaml")
+            .map(Vec::as_slice)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "package snapshot contains no package.yaml",
+                )
+            })
+    }
+
+    /// Portable digest of all paths and bytes in this snapshot.
+    pub fn content_hash(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(CONTENT_HASH_DOMAIN);
+        for (relative, bytes) in &self.files {
+            hasher.update((relative.len() as u64).to_be_bytes());
+            hasher.update(relative.as_bytes());
+            hasher.update((bytes.len() as u64).to_be_bytes());
+            hasher.update(bytes);
+        }
+        format!("sha256:{:x}", hasher.finalize())
     }
 }
 
@@ -141,6 +185,39 @@ impl LoadedPackage {
 /// non-UTF-8 paths are rejected so the result cannot depend on host traversal
 /// behavior or escape the package root.
 pub fn package_content_hash(root: &Path) -> io::Result<String> {
+    Ok(package_snapshot(root)?.content_hash())
+}
+
+/// Read a stable package snapshot, retrying when the tree changes between
+/// consecutive complete reads.
+pub fn package_snapshot(root: &Path) -> io::Result<PackageSnapshot> {
+    package_snapshot_with_hook(root, |_| Ok(()))
+}
+
+fn package_snapshot_with_hook(
+    root: &Path,
+    mut between_reads: impl FnMut(usize) -> io::Result<()>,
+) -> io::Result<PackageSnapshot> {
+    let mut observed = read_package_tree(root)?;
+    for attempt in 0..=SNAPSHOT_VERIFY_RETRIES {
+        between_reads(attempt)?;
+        let verified = read_package_tree(root)?;
+        if observed == verified {
+            return Ok(PackageSnapshot { files: verified });
+        }
+        observed = verified;
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "package tree '{}' remained unstable after {} verification retries",
+            root.display(),
+            SNAPSHOT_VERIFY_RETRIES
+        ),
+    ))
+}
+
+fn read_package_tree(root: &Path) -> io::Result<BTreeMap<String, Vec<u8>>> {
     let root_type = std::fs::symlink_metadata(root)?.file_type();
     if root_type.is_symlink() || !root_type.is_dir() {
         return Err(io::Error::new(
@@ -156,34 +233,11 @@ pub fn package_content_hash(root: &Path) -> io::Result<String> {
     collect_content_files(root, root, &mut files)?;
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut hasher = Sha256::new();
-    hasher.update(CONTENT_HASH_DOMAIN);
+    let mut snapshot = BTreeMap::new();
     for (relative, path) in files {
-        let relative = relative.as_bytes();
-        hasher.update((relative.len() as u64).to_be_bytes());
-        hasher.update(relative);
-
-        let expected_len = std::fs::metadata(&path)?.len();
-        hasher.update(expected_len.to_be_bytes());
-        let mut file = std::fs::File::open(&path)?;
-        let mut observed_len = 0_u64;
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            observed_len += read as u64;
-            hasher.update(&buffer[..read]);
-        }
-        if observed_len != expected_len {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("'{}' changed while its content was hashed", path.display()),
-            ));
-        }
+        snapshot.insert(relative, std::fs::read(path)?);
     }
-    Ok(format!("sha256:{:x}", hasher.finalize()))
+    Ok(snapshot)
 }
 
 fn collect_content_files(
@@ -555,5 +609,27 @@ mod tests {
 
         std::fs::remove_dir_all(first).unwrap();
         std::fs::remove_dir_all(second).unwrap();
+    }
+
+    #[test]
+    fn snapshot_retries_an_intervening_same_length_manifest_rewrite() {
+        let package = temporary_package_dir("same-length-rewrite");
+        std::fs::write(package.join("package.yaml"), b"package: alpha\n").unwrap();
+        std::fs::write(package.join("README.md"), b"stable\n").unwrap();
+        let before = package_snapshot(&package).unwrap();
+
+        let mut rewrote = false;
+        let after = package_snapshot_with_hook(&package, |_| {
+            if !rewrote {
+                std::fs::write(package.join("package.yaml"), b"package: bravo\n")?;
+                rewrote = true;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(after.manifest_bytes().unwrap(), b"package: bravo\n");
+        assert_ne!(before.content_hash(), after.content_hash());
+        std::fs::remove_dir_all(package).unwrap();
     }
 }
