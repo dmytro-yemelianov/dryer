@@ -21,9 +21,11 @@ tests exist and pass, not that a type was declared.
   validation (version/kind, identifiers, package refs, quantity dimensions,
   intra-document references, transport parents) with dotted paths and **exact,
   exclusive source ranges** from a marked YAML event walk (`spans::SpanIndex`,
-  yaml-rust2): every key and sequence item is indexed; unrecorded paths locate at
-  their nearest ancestor. The original `path`/`line`/`column` fields remain as a
-  compatibility projection, and the reusable index flows into resolver diagnostics.
+  yaml-rust2): every key and sequence item is indexed, aliases advance sequence
+  positions, and multiline quoted/block scalars retain their physical end position;
+  unrecorded paths locate at their nearest ancestor. A failed YAML scan discards its
+  partial index. The original `path`/`line`/`column` fields remain as a compatibility
+  projection, and the reusable index flows into resolver diagnostics.
 - [x] **5. `machine-resolver` phases 1–7 and structured diagnostics** — the seven-phase
   skeleton runs end-to-end with a recorded `phases_run` trace: parse/schema delegate to
   the parser; phase 3 checks pinned packages against the registry (exact-version match,
@@ -52,8 +54,10 @@ tests exist and pass, not that a type was declared.
   (I1133), a kinematics-type mismatch warns (E1130), and template-injected claim
   errors are hard (E1131/E1134/E1206). Slice 10 completed §11.3 diagnostics:
   resolver errors inherit exact machine-source ranges; E1103/E1104 retain portable
-  package-manifest ranges for every dependency constraint; E1200/E1314 link the
-  current connector/timer claim to the original reservation through `related`.
+  package-manifest ranges for every dependency constraint; template-expanded
+  component claims retain their package-template ranges; E1200/E1314 link the current
+  connector/timer claim to the original reservation through `related`, even when one
+  or both claims came from a package template.
   Rich diagnostic JSON remains deterministic and older diagnostic JSON still
   deserializes with empty range/related fields.
 - [~] **6. Electrical, timing, and safety validation** — first electrical check landed

@@ -156,6 +156,7 @@ struct RequirementConstraint {
 struct ResourceClaim {
     component: String,
     path: String,
+    source: Option<SourceSpan>,
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +164,42 @@ struct TimerClaim {
     component: String,
     pin: String,
     path: String,
+    source: Option<SourceSpan>,
+}
+
+fn expanded_source(sources: &BTreeMap<String, SourceSpan>, path: &str) -> Option<SourceSpan> {
+    let mut candidate = path.to_string();
+    loop {
+        if let Some(source) = sources.get(&candidate) {
+            return Some(source.clone());
+        }
+        let i = candidate.rfind(['.', '['])?;
+        candidate.truncate(i);
+    }
+}
+
+fn diagnostic_at_source(
+    diagnostic: Diagnostic,
+    path: &str,
+    source: Option<&SourceSpan>,
+) -> Diagnostic {
+    let diagnostic = diagnostic.at(path);
+    match source {
+        Some(source) => diagnostic.with_source(source.clone()),
+        None => diagnostic,
+    }
+}
+
+fn related_to_claim(
+    diagnostic: Diagnostic,
+    message: String,
+    path: &str,
+    source: Option<&SourceSpan>,
+) -> Diagnostic {
+    match source {
+        Some(source) => diagnostic.related_source(message, source.clone()),
+        None => diagnostic.related_at(message, path),
+    }
 }
 
 fn locate_diagnostics(diagnostics: &mut [Diagnostic], spans: &SpanIndex) {
@@ -572,6 +609,11 @@ fn resolve_doc(
     // graph stays explainable.
     phases_run.push(Phase::GraphExpansion);
     let mut expanded = doc.clone();
+    // Machine-style expanded paths -> exact package-template source. Keeping
+    // this beside the expanded graph lets later phases report the document
+    // that actually introduced a component instead of asking the machine's
+    // SpanIndex to locate a path that never existed there.
+    let mut expanded_sources: BTreeMap<String, SourceSpan> = BTreeMap::new();
     for path in chosen.keys() {
         let Some(pkg) = select(path) else { continue };
         if pkg.kind != dryer_package_model::PackageKind::Machine {
@@ -607,6 +649,19 @@ fn resolve_doc(
                         "I1133",
                         format!("component '{cid}' expanded from '{path}'"),
                     ));
+                    if let Some(index) = package_spans.get(&pkg.reference.to_string()) {
+                        let template_path = format!("template.components.{cid}");
+                        let expanded_path = format!("components.{cid}");
+                        if let Some(source) = index.get_span(&template_path) {
+                            expanded_sources.insert(expanded_path.clone(), source);
+                        }
+                        for attr in comp.attributes.keys() {
+                            if let Some(source) = index.get_span(&format!("{template_path}.{attr}"))
+                            {
+                                expanded_sources.insert(format!("{expanded_path}.{attr}"), source);
+                            }
+                        }
+                    }
                     e.insert(comp);
                 }
             }
@@ -720,58 +775,64 @@ fn resolve_doc(
                     .and_then(|d| d.connector.clone())
                     .unwrap_or_else(|| table_kind.to_string()),
             };
+            let claim_path = format!("components.{cname}.{attr}");
+            let claim_source = expanded_source(&expanded_sources, &claim_path);
             // The parser guarantees shape and controller existence for
             // SOURCE components; template-expanded components bypass it,
             // so both are re-checked here rather than silently skipped.
             let Some((ctrl, port)) = target.split_once('.') else {
-                diagnostics.push(
+                diagnostics.push(diagnostic_at_source(
                     Diagnostic::error(
                         "E1206",
                         format!(
                             "component '{cname}': '{target}' must name a controller port as 'controller.port'"
                         ),
-                    )
-                    .at(format!("components.{cname}.{attr}")),
-                );
+                    ),
+                    &claim_path,
+                    claim_source.as_ref(),
+                ));
                 continue;
             };
             let Some(board) = boards.get(ctrl) else {
-                diagnostics.push(
+                diagnostics.push(diagnostic_at_source(
                     Diagnostic::error(
                         "E1206",
                         format!("component '{cname}': unknown controller '{ctrl}' in '{target}'"),
-                    )
-                    .at(format!("components.{cname}.{attr}")),
-                );
+                    ),
+                    &claim_path,
+                    claim_source.as_ref(),
+                ));
                 continue;
             };
 
             let Some(connector) = board.connectors.get(port) else {
                 let known: Vec<&String> = board.connectors.keys().collect();
-                diagnostics.push(
+                diagnostics.push(diagnostic_at_source(
                     Diagnostic::error(
                         "E1201",
                         format!(
                             "component '{cname}': controller '{ctrl}' has no connector '{port}'"
                         ),
                     )
-                    .at(format!("components.{cname}.{attr}"))
                     .suggest(format!("available connectors: {known:?}")),
-                );
+                    &claim_path,
+                    claim_source.as_ref(),
+                ));
                 continue;
             };
 
             if connector.kind != expected_kind {
-                diagnostics.push(
+                diagnostics.push(diagnostic_at_source(
                     Diagnostic::error(
                         "E1202",
                         format!(
                             "component '{cname}': '{target}' is a {} connector, but '{attr}' requires {expected_kind}",
                             connector.kind
                         ),
-                    )
-                    .at(format!("components.{cname}.{attr}")),
-                );
+                    ),
+                    &claim_path,
+                    claim_source.as_ref(),
+                ));
                 continue;
             }
 
@@ -786,17 +847,22 @@ fn resolve_doc(
                     })
                     .map(|(id, _)| format!("{ctrl}.{id}"))
                     .collect();
-                let mut d = Diagnostic::error(
-                    "E1200",
-                    format!(
-                        "connector conflict: '{target}' is claimed by both '{prev}' and '{cname}'",
-                        prev = prev.component
+                let mut d = diagnostic_at_source(
+                    Diagnostic::error(
+                        "E1200",
+                        format!(
+                            "connector conflict: '{target}' is claimed by both '{prev}' and '{cname}'",
+                            prev = prev.component
+                        ),
                     ),
-                )
-                .at(format!("components.{cname}.{attr}"))
-                .related_at(
+                    &claim_path,
+                    claim_source.as_ref(),
+                );
+                d = related_to_claim(
+                    d,
                     format!("'{}' first claimed '{target}' here", prev.component),
-                    prev.path.clone(),
+                    &prev.path,
+                    prev.source.as_ref(),
                 );
                 if free.is_empty() {
                     d = d.suggest(format!(
@@ -820,35 +886,39 @@ fn resolve_doc(
                     let step_pin = connector.pins.get("step").cloned().unwrap_or_default();
                     match step_funcs.iter().find(|f| f.starts_with("tim")) {
                         None => {
-                            diagnostics.push(
+                            diagnostics.push(diagnostic_at_source(
                                 Diagnostic::error(
                                     "E1310",
                                     format!(
                                         "component '{cname}': max_step_rate is declared, but '{target}' step pin {step_pin} has no timer function (capabilities: {})",
                                         step_funcs.join(", ")
                                     ),
-                                )
-                                .at(format!("components.{cname}.{attr}")),
-                            );
+                                ),
+                                &claim_path,
+                                claim_source.as_ref(),
+                            ));
                             continue;
                         }
                         Some(tok) => {
                             let key = format!("{ctrl}.{tok}");
                             if let Some(other) = timer_claims.get(&key) {
-                                diagnostics.push(
+                                let d = diagnostic_at_source(
                                     Diagnostic::error(
                                         "E1314",
                                         format!(
                                             "timer conflict: '{cname}' (pin {step_pin}) and '{}' (pin {}) both need {tok} on '{ctrl}'",
                                             other.component, other.pin
                                         ),
-                                    )
-                                    .at(format!("components.{cname}.{attr}"))
-                                    .related_at(
-                                        format!("'{}' reserved {tok} here", other.component),
-                                        other.path.clone(),
                                     ),
+                                    &claim_path,
+                                    claim_source.as_ref(),
                                 );
+                                diagnostics.push(related_to_claim(
+                                    d,
+                                    format!("'{}' reserved {tok} here", other.component),
+                                    &other.path,
+                                    other.source.as_ref(),
+                                ));
                                 continue;
                             }
                             timer_claims.insert(
@@ -856,7 +926,8 @@ fn resolve_doc(
                                 TimerClaim {
                                     component: cname.clone(),
                                     pin: step_pin,
-                                    path: format!("components.{cname}.{attr}"),
+                                    path: claim_path.clone(),
+                                    source: claim_source.clone(),
                                 },
                             );
                             constraints.push(format!(
@@ -870,7 +941,8 @@ fn resolve_doc(
                 target.to_string(),
                 ResourceClaim {
                     component: cname.clone(),
-                    path: format!("components.{cname}.{attr}"),
+                    path: claim_path,
+                    source: claim_source,
                 },
             );
             resolved
@@ -909,6 +981,8 @@ fn resolve_doc(
         let Some(required_kind) = dreq.connector.clone() else {
             continue;
         };
+        let component_path = format!("components.{cname}");
+        let component_source = expanded_source(&expanded_sources, &component_path);
         let required_domains = dreq.domains.clone();
         let required_bus = dreq.bus.clone();
         // Which controller to search: an explicit `controller:` attribute,
@@ -1014,7 +1088,8 @@ fn resolve_doc(
             target.clone(),
             ResourceClaim {
                 component: cname.clone(),
-                path: format!("components.{cname}"),
+                path: component_path.clone(),
+                source: component_source.clone(),
             },
         );
         let target_caps = target
@@ -1065,7 +1140,8 @@ fn resolve_doc(
                     TimerClaim {
                         component: cname.clone(),
                         pin: step_pin,
-                        path: format!("components.{cname}"),
+                        path: component_path,
+                        source: component_source,
                     },
                 );
                 constraints.push(format!(
@@ -1391,6 +1467,18 @@ mod tests {
         LocalRegistry::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages"))
     }
 
+    fn registry_with_conflicting_template() -> LocalRegistry {
+        let mut registry = registry();
+        let package = registry
+            .packages
+            .iter_mut()
+            .find(|package| package.reference.to_string() == "machines/cartesian-basic@1.0.0")
+            .expect("cartesian template package");
+        package.dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/template-conflict");
+        registry
+    }
+
     fn fixture() -> String {
         std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1468,6 +1556,52 @@ mod tests {
             Some("components.x_driver.connected_to")
         );
         assert_eq!((first.start.column, first.end.column), (5, 17));
+    }
+
+    #[test]
+    fn template_claim_conflicts_retain_package_source_ranges() {
+        let o = resolve_source(&with_rate(), &registry_with_conflicting_template());
+        assert!(!o.is_ok());
+
+        let connector = o
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E1200")
+            .expect("connector conflict");
+        let template_claim = connector.related[0]
+            .source
+            .as_ref()
+            .expect("template connector source");
+        assert_eq!(
+            template_claim.document.as_deref(),
+            Some("package:machines/cartesian-basic@1.0.0/package.yaml")
+        );
+        assert_eq!(
+            template_claim.path.as_deref(),
+            Some("template.components.a_template_driver.connected_to")
+        );
+
+        let timer = o
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E1314")
+            .expect("timer conflict");
+        assert_eq!(
+            timer
+                .source
+                .as_ref()
+                .and_then(|source| source.path.as_deref()),
+            Some("template.components.b_template_driver.connected_to")
+        );
+        assert_eq!(
+            timer.related[0]
+                .source
+                .as_ref()
+                .and_then(|source| source.path.as_deref()),
+            Some("template.components.a_template_driver.connected_to")
+        );
+        assert!(timer.source.as_ref().unwrap().document.is_some());
+        assert!(timer.related[0].source.as_ref().unwrap().document.is_some());
     }
 
     #[test]

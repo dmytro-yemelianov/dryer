@@ -9,7 +9,7 @@
 use dryer_machine_schema::{SourcePosition, SourceSpan};
 use std::collections::BTreeMap;
 use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser};
-use yaml_rust2::scanner::Marker;
+use yaml_rust2::scanner::{Marker, TScalarStyle};
 
 /// Path → exact range of the key or sequence item.
 #[derive(Debug, Clone, Default)]
@@ -34,7 +34,9 @@ impl SpanIndex {
     fn build_with_document(source: &str, document: Option<String>) -> SpanIndex {
         let mut rx = Receiver::new(source);
         let mut parser = Parser::new_from_str(source);
-        let _ = parser.load(&mut rx, false);
+        if parser.load(&mut rx, false).is_err() {
+            rx.map.clear();
+        }
         SpanIndex {
             map: rx.map,
             document,
@@ -114,26 +116,151 @@ impl Receiver {
         }
     }
 
-    fn scalar_span(&self, path: String, value: &str, mark: Marker) -> SourceSpan {
+    fn scalar_span(
+        &self,
+        path: String,
+        value: &str,
+        style: TScalarStyle,
+        mark: Marker,
+    ) -> SourceSpan {
         let start_column = mark.col() + 1;
-        let width = self.scalar_width(value, mark).max(1);
-        SourceSpan::new(
-            path,
-            SourcePosition::new(mark.line(), start_column),
-            SourcePosition::new(mark.line(), start_column + width),
-        )
+        let end = self.scalar_end(value, style, mark);
+        SourceSpan::new(path, SourcePosition::new(mark.line(), start_column), end)
     }
 
-    fn scalar_width(&self, value: &str, mark: Marker) -> usize {
-        let Some(line) = self.source_lines.get(mark.line().saturating_sub(1)) else {
-            return value.chars().count();
-        };
-        let tail: Vec<char> = line.chars().skip(mark.col()).collect();
-        match tail.first().copied() {
-            Some('\'') => quoted_width(&tail, '\''),
-            Some('"') => quoted_width(&tail, '"'),
-            _ => value.chars().count(),
+    fn scalar_end(&self, value: &str, style: TScalarStyle, mark: Marker) -> SourcePosition {
+        match style {
+            TScalarStyle::SingleQuoted => self.quoted_scalar_end(mark, '\''),
+            TScalarStyle::DoubleQuoted => self.quoted_scalar_end(mark, '"'),
+            TScalarStyle::Literal | TScalarStyle::Folded => self.block_scalar_end(mark),
+            TScalarStyle::Plain => self.plain_scalar_end(value, mark),
         }
+    }
+
+    fn quoted_scalar_end(&self, mark: Marker, quote: char) -> SourcePosition {
+        let start_line = mark.line().saturating_sub(1);
+        for (line_idx, line) in self.source_lines.iter().enumerate().skip(start_line) {
+            let chars: Vec<char> = line.chars().collect();
+            let start = if line_idx == start_line {
+                mark.col() + 1
+            } else {
+                0
+            };
+            let mut i = start;
+            while i < chars.len() {
+                if chars[i] == quote {
+                    if quote == '\'' && chars.get(i + 1) == Some(&quote) {
+                        i += 2;
+                        continue;
+                    }
+                    if quote == '"' && is_escaped(&chars, i) {
+                        i += 1;
+                        continue;
+                    }
+                    return SourcePosition::new(line_idx + 1, i + 2);
+                }
+                i += 1;
+            }
+        }
+        self.source_end(mark)
+    }
+
+    fn block_scalar_end(&self, mark: Marker) -> SourcePosition {
+        let start_idx = mark.line().saturating_sub(1);
+        let Some(start_line) = self.source_lines.get(start_idx) else {
+            return SourcePosition::new(mark.line(), mark.col() + 2);
+        };
+        let starts_at_header = matches!(start_line.chars().nth(mark.col()), Some('|' | '>'));
+        let base_indent = if starts_at_header {
+            leading_spaces(start_line)
+        } else {
+            mark.col()
+        };
+        let mut content_indent = (!starts_at_header).then_some(base_indent);
+        let mut last_line = start_idx;
+
+        for (line_idx, line) in self.source_lines.iter().enumerate().skip(start_idx + 1) {
+            if line.trim().is_empty() {
+                if content_indent.is_some() {
+                    last_line = line_idx;
+                }
+                continue;
+            }
+            let indent = leading_spaces(line);
+            let required = match content_indent {
+                Some(required) => required,
+                None if indent > base_indent => {
+                    content_indent = Some(indent);
+                    indent
+                }
+                None => break,
+            };
+            if indent < required {
+                break;
+            }
+            last_line = line_idx;
+        }
+
+        let end_line = &self.source_lines[last_line];
+        SourcePosition::new(last_line + 1, end_line.chars().count() + 1)
+    }
+
+    fn plain_scalar_end(&self, value: &str, mark: Marker) -> SourcePosition {
+        let Some(line) = self.source_lines.get(mark.line().saturating_sub(1)) else {
+            return SourcePosition::new(mark.line(), mark.col() + value.chars().count() + 1);
+        };
+        let chars: Vec<char> = line.chars().collect();
+        let (first_end, terminated) = plain_line_end(&chars, mark.col());
+        if terminated {
+            return SourcePosition::new(mark.line(), first_end + 1);
+        }
+
+        let base_indent = leading_spaces(line);
+        let mut last_line = mark.line().saturating_sub(1);
+        let mut last_end = first_end.max(mark.col() + value.chars().count());
+        for (line_idx, continuation) in self.source_lines.iter().enumerate().skip(mark.line()) {
+            if continuation.trim().is_empty() {
+                continue;
+            }
+            let indent = leading_spaces(continuation);
+            if indent <= base_indent {
+                break;
+            }
+            let continuation_chars: Vec<char> = continuation.chars().collect();
+            let (end, stopped) = plain_line_end(&continuation_chars, indent);
+            last_line = line_idx;
+            last_end = end;
+            if stopped {
+                break;
+            }
+        }
+        SourcePosition::new(last_line + 1, last_end + 1)
+    }
+
+    fn alias_span(&self, path: String, mark: Marker) -> SourceSpan {
+        let end = self
+            .source_lines
+            .get(mark.line().saturating_sub(1))
+            .map(|line| {
+                let chars: Vec<char> = line.chars().collect();
+                let mut i = mark.col();
+                while i < chars.len()
+                    && !chars[i].is_whitespace()
+                    && !matches!(chars[i], ',' | '[' | ']' | '{' | '}')
+                {
+                    i += 1;
+                }
+                SourcePosition::new(mark.line(), i + 1)
+            })
+            .unwrap_or_else(|| SourcePosition::new(mark.line(), mark.col() + 2));
+        SourceSpan::new(path, SourcePosition::new(mark.line(), mark.col() + 1), end)
+    }
+
+    fn source_end(&self, mark: Marker) -> SourcePosition {
+        self.source_lines
+            .last()
+            .map(|line| SourcePosition::new(self.source_lines.len(), line.chars().count() + 1))
+            .unwrap_or_else(|| SourcePosition::new(mark.line(), mark.col() + 2))
     }
 
     fn enter_container(&mut self) {
@@ -188,7 +315,7 @@ impl MarkedEventReceiver for Receiver {
                 self.frames.push(Frame::Seq { idx: 0 });
             }
             Event::MappingEnd | Event::SequenceEnd => self.leave_container(),
-            Event::Scalar(value, ..) => {
+            Event::Scalar(value, style, ..) => {
                 let mut key_entry: Option<String> = None;
                 let mut item_entry: Option<String> = None;
                 match self.frames.last_mut() {
@@ -208,45 +335,70 @@ impl MarkedEventReceiver for Receiver {
                     None => {}
                 }
                 if let Some(p) = key_entry {
-                    let span = self.scalar_span(p.clone(), &value, mark);
+                    let span = self.scalar_span(p.clone(), &value, style, mark);
                     self.map.insert(p, span);
                     self.pending = Some(value);
                 } else if let Some(p) = item_entry {
-                    let span = self.scalar_span(p.clone(), &value, mark);
+                    let span = self.scalar_span(p.clone(), &value, style, mark);
                     self.map.insert(p, span);
                 } else {
                     self.on_value_scalar();
                 }
             }
-            Event::Alias(_) => self.on_value_scalar(),
+            Event::Alias(_) => {
+                let item_entry = match self.frames.last_mut() {
+                    Some(Frame::Seq { idx }) => {
+                        let mut full = self.path.clone();
+                        full.push(format!("[{}]", *idx));
+                        *idx += 1;
+                        Some(join(&full))
+                    }
+                    _ => None,
+                };
+                if let Some(p) = item_entry {
+                    let span = self.alias_span(p.clone(), mark);
+                    self.map.insert(p, span);
+                } else {
+                    self.on_value_scalar();
+                }
+            }
             _ => {}
         }
     }
 }
 
-fn quoted_width(tail: &[char], quote: char) -> usize {
-    let mut escaped = false;
-    let mut i = 1;
-    while i < tail.len() {
-        let c = tail[i];
-        if quote == '"' {
-            if c == quote && !escaped {
-                return i + 1;
-            }
-            escaped = c == '\\' && !escaped;
-            if c != '\\' {
-                escaped = false;
-            }
-        } else if c == quote {
-            if tail.get(i + 1) == Some(&quote) {
-                i += 1;
-            } else {
-                return i + 1;
-            }
+fn leading_spaces(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ').count()
+}
+
+fn is_escaped(chars: &[char], index: usize) -> bool {
+    chars[..index]
+        .iter()
+        .rev()
+        .take_while(|c| **c == '\\')
+        .count()
+        % 2
+        == 1
+}
+
+fn plain_line_end(chars: &[char], start: usize) -> (usize, bool) {
+    let mut end = chars.len();
+    for i in start..chars.len() {
+        let c = chars[i];
+        let preceded_by_space = i == start || chars[i.saturating_sub(1)].is_whitespace();
+        let followed_by_space = chars.get(i + 1).map_or(true, |next| next.is_whitespace());
+        if matches!(c, ',' | ']' | '}')
+            || (c == '#' && preceded_by_space)
+            || (c == ':' && followed_by_space)
+        {
+            end = i;
+            break;
         }
-        i += 1;
     }
-    tail.len()
+    while end > start && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    (end, end < chars.len())
 }
 
 #[cfg(test)]
@@ -290,6 +442,39 @@ list:
     }
 
     #[test]
+    fn multiline_scalars_end_at_their_physical_closing_position() {
+        let idx = SpanIndex::build("items:\n  - |\n    first\n    second\n  - \"line\n    two\"\n");
+        assert_eq!(
+            idx.get_span("items[0]").unwrap(),
+            SourceSpan::new(
+                "items[0]",
+                SourcePosition::new(3, 5),
+                SourcePosition::new(4, 11),
+            )
+        );
+        assert_eq!(
+            idx.get_span("items[1]").unwrap(),
+            SourceSpan::new(
+                "items[1]",
+                SourcePosition::new(5, 5),
+                SourcePosition::new(6, 9),
+            )
+        );
+    }
+
+    #[test]
+    fn aliases_occupy_a_sequence_index() {
+        let idx = SpanIndex::build("items:\n  - &base one\n  - *base\n  - two\n");
+        let alias = idx.get_span("items[1]").unwrap();
+        assert_eq!(alias.start, SourcePosition::new(3, 5));
+        assert_eq!(alias.end, SourcePosition::new(3, 10));
+        assert_eq!(
+            idx.get_span("items[2]").unwrap().start,
+            SourcePosition::new(4, 5)
+        );
+    }
+
+    #[test]
     fn locate_retreats_to_the_nearest_ancestor() {
         let idx = SpanIndex::build(DOC);
         assert_eq!(idx.locate("nest.a.ghost"), Some((3, 2)));
@@ -300,6 +485,6 @@ list:
     #[test]
     fn a_scan_failure_yields_an_empty_index() {
         let idx = SpanIndex::build("a: [unclosed");
-        assert!(idx.locate("a").is_none() || idx.get("a").is_some());
+        assert!(idx.map.is_empty());
     }
 }

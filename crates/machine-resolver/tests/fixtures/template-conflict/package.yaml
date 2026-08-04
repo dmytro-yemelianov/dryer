@@ -1,0 +1,14 @@
+package:
+  namespace: machines
+  name: cartesian-basic
+  version: 1.0.0
+  kind: machine
+
+template:
+  components:
+    a_template_driver:
+      type: tmc2209
+      connected_to: mainboard.motor0
+    b_template_driver:
+      type: tmc2209
+      connected_to: mainboard.motor2
