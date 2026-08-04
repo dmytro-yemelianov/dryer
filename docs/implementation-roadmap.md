@@ -89,7 +89,7 @@ tests exist and pass, not that a type was declared.
   in the crate docs).
 - [ ] **8. Klipper config and build-parameter export** *(license/provenance record
   required first — §23.5)*
-- [~] **9. Simulated controller and end-to-end golden tests** — `dryer-simulator`
+- [x] **9. Simulated controller and end-to-end golden tests** — `dryer-simulator`
   per [`simulator.md`](simulator.md): 1 µs virtual clock, typed command semantics
   (wire framing deliberately later), transport with seeded jitter/loss/duplication
   and link faults, bounded queue, first-order thermal plant + endstop homing with
@@ -99,8 +99,14 @@ tests exist and pass, not that a type was declared.
   the fixture job golden (`examples/minimal-cartesian/job-trace.golden`) is
   drift-gated by test with an UPDATE_TRACE regeneration path; seeded-fault
   determinism pinned (identical seeds ⇒ identical traces under jitter+loss+dup).
-  *Remaining for [x]:* multi-controller clock skew (deferred per design Q3),
-  queue timestamp windows, and replay tooling beyond first-divergence.
+  A follow-up slice completed the single-controller queue contract: scheduled
+  commands are accepted only within the reported lead/horizon window, must align to
+  the 1 ms execution quantum, remain timestamp-ordered even when they arrive out of
+  order, and execute only when due. Structured replay reports now include the first
+  divergent index/tick plus expected and actual events, with a read-only replay CLI.
+  Multi-controller clock skew stays explicitly deferred per the accepted design Q3;
+  it requires a real synchronization protocol and multi-controller fixture rather
+  than assumptions in this single-controller contract.
 - [x] **10. Cross-platform flash discovery and dry-run plans** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies

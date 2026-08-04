@@ -129,6 +129,58 @@ impl Trace {
         let n = self.0.len().max(other.0.len());
         (0..n).find(|&i| self.0.get(i) != other.0.get(i))
     }
+
+    /// Structured comparison for replay tooling. `self` is the actual trace
+    /// and `expected` is the recorded trace being replayed against.
+    pub fn replay_report(&self, expected: &Trace) -> ReplayReport {
+        let divergence = self.first_divergence(expected).map(|event_index| {
+            let actual = self.0.get(event_index).cloned();
+            let expected = expected.0.get(event_index).cloned();
+            let first_divergent_tick = match (
+                actual.as_ref().map(Event::at),
+                expected.as_ref().map(Event::at),
+            ) {
+                (Some(actual), Some(expected)) => Some(actual.min(expected)),
+                (actual, expected) => actual.or(expected),
+            };
+            TraceDivergence {
+                event_index,
+                first_divergent_tick,
+                expected,
+                actual,
+            }
+        });
+        ReplayReport {
+            matched: divergence.is_none(),
+            expected_events: expected.0.len(),
+            actual_events: self.0.len(),
+            divergence,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TraceDivergence {
+    pub event_index: usize,
+    pub first_divergent_tick: Option<Tick>,
+    pub expected: Option<Event>,
+    pub actual: Option<Event>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplayReport {
+    pub matched: bool,
+    pub expected_events: usize,
+    pub actual_events: usize,
+    pub divergence: Option<TraceDivergence>,
+}
+
+impl ReplayReport {
+    pub fn to_pretty_json(&self) -> String {
+        let mut text = serde_json::to_string_pretty(self).expect("replay report serializes");
+        text.push('\n');
+        text
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,12 +212,18 @@ impl Default for TransportConfig {
     }
 }
 
-/// In-memory duplex carrying `(deliver_at, Command)`.
+#[derive(Debug, Clone)]
+struct TransportCommand {
+    command: Command,
+    execute_at: Option<Tick>,
+}
+
+/// In-memory duplex carrying `(deliver_at, command + optional execute_at)`.
 #[derive(Debug)]
 pub struct SimTransport {
     cfg: TransportConfig,
     rng: u64,
-    in_flight: VecDeque<(Tick, Command)>,
+    in_flight: VecDeque<(Tick, TransportCommand)>,
     link_up: bool,
 }
 
@@ -190,8 +248,20 @@ impl SimTransport {
     }
 
     /// Send a command at `now`; it arrives after latency+jitter unless the
-    /// link is down or the loss roll eats it.
+    /// link is down or the loss roll eats it. Immediate commands retain the
+    /// original v0 behavior and bypass scheduled-queue timestamp windows.
     pub fn send(&mut self, now: Tick, cmd: Command) {
+        self.send_inner(now, None, cmd);
+    }
+
+    /// Send a queue command that must execute at `execute_at`. The controller
+    /// validates the timestamp against its acceptance window when the command
+    /// arrives; transport latency therefore consumes part of the host's lead.
+    pub fn send_scheduled(&mut self, now: Tick, execute_at: Tick, cmd: Command) {
+        self.send_inner(now, Some(execute_at), cmd);
+    }
+
+    fn send_inner(&mut self, now: Tick, execute_at: Option<Tick>, cmd: Command) {
         if !self.link_up {
             return;
         }
@@ -203,10 +273,16 @@ impl SimTransport {
         } else {
             0
         };
-        let at = now + self.cfg.latency_ticks + jitter;
-        self.in_flight.push_back((at, cmd.clone()));
+        let at = now
+            .saturating_add(self.cfg.latency_ticks)
+            .saturating_add(jitter);
+        let message = TransportCommand {
+            command: cmd,
+            execute_at,
+        };
+        self.in_flight.push_back((at, message.clone()));
         if self.cfg.dup_per_mille > 0 && self.next_rand() % 1000 < self.cfg.dup_per_mille as u64 {
-            self.in_flight.push_back((at + 1, cmd));
+            self.in_flight.push_back((at.saturating_add(1), message));
         }
     }
 
@@ -220,18 +296,18 @@ impl SimTransport {
         self.link_up = true;
     }
 
-    fn deliver_due(&mut self, now: Tick) -> Vec<Command> {
-        let mut due: Vec<(Tick, Command)> = Vec::new();
-        self.in_flight.retain(|(at, cmd)| {
+    fn deliver_due(&mut self, now: Tick) -> Vec<TransportCommand> {
+        let mut due: Vec<(Tick, TransportCommand)> = Vec::new();
+        self.in_flight.retain(|(at, command)| {
             if *at <= now {
-                due.push((*at, cmd.clone()));
+                due.push((*at, command.clone()));
                 false
             } else {
                 true
             }
         });
         due.sort_by_key(|(at, _)| *at);
-        due.into_iter().map(|(_, c)| c).collect()
+        due.into_iter().map(|(_, command)| command).collect()
     }
 }
 
@@ -283,14 +359,85 @@ struct AxisState {
     motion: Option<Motion>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueWindow {
+    min_lead_ticks: Tick,
+    max_horizon_ticks: Tick,
+}
+
+impl QueueWindow {
+    pub fn new(min_lead_ticks: Tick, max_horizon_ticks: Tick) -> Result<Self, QueueWindowError> {
+        if max_horizon_ticks < min_lead_ticks {
+            return Err(QueueWindowError {
+                min_lead_ticks,
+                max_horizon_ticks,
+            });
+        }
+        Ok(Self {
+            min_lead_ticks,
+            max_horizon_ticks,
+        })
+    }
+
+    pub fn min_lead_ticks(&self) -> Tick {
+        self.min_lead_ticks
+    }
+
+    pub fn max_horizon_ticks(&self) -> Tick {
+        self.max_horizon_ticks
+    }
+}
+
+impl Default for QueueWindow {
+    fn default() -> Self {
+        Self {
+            min_lead_ticks: 100 * TICKS_PER_MS,
+            max_horizon_ticks: 1_000 * TICKS_PER_MS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueWindowError {
+    min_lead_ticks: Tick,
+    max_horizon_ticks: Tick,
+}
+
+impl std::fmt::Display for QueueWindowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "queue max horizon {} is earlier than minimum lead {}",
+            self.max_horizon_ticks, self.min_lead_ticks
+        )
+    }
+}
+
+impl std::error::Error for QueueWindowError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueStatus {
+    pub capacity: usize,
+    pub fill_level: usize,
+    pub earliest_accepted_timestamp: Tick,
+    pub latest_accepted_timestamp: Tick,
+}
+
+#[derive(Debug)]
+struct QueuedCommand {
+    execute_at: Tick,
+    command: Command,
+}
+
 #[derive(Debug)]
 pub struct SimController {
     now: Tick,
     ambient_milli_c: i64,
     heaters: Vec<HeaterState>,
     axes: Vec<AxisState>,
-    queue: VecDeque<Command>,
+    queue: VecDeque<QueuedCommand>,
     queue_capacity: usize,
+    queue_window: QueueWindow,
     last_heartbeat: Tick,
     latched_fault: Option<String>,
     /// Sample cadence for temperature telemetry.
@@ -324,6 +471,7 @@ impl SimController {
                 .collect(),
             queue: VecDeque::new(),
             queue_capacity: 16,
+            queue_window: QueueWindow::default(),
             last_heartbeat: 0,
             latched_fault: None,
             temp_sample_every: 100 * TICKS_PER_MS,
@@ -354,6 +502,21 @@ impl SimController {
             .map(|a| a.position_um)
     }
 
+    pub fn queue_status(&self) -> QueueStatus {
+        QueueStatus {
+            capacity: self.queue_capacity,
+            fill_level: self.queue.len(),
+            earliest_accepted_timestamp: self.now.saturating_add(self.queue_window.min_lead_ticks),
+            latest_accepted_timestamp: self.now.saturating_add(self.queue_window.max_horizon_ticks),
+        }
+    }
+
+    /// Configure future scheduled-command acceptance. Existing queued
+    /// commands keep their timestamps and are not revalidated.
+    pub fn set_queue_window(&mut self, window: QueueWindow) {
+        self.queue_window = window;
+    }
+
     /// Fault injection: controller reset — outputs enter their safe state,
     /// a fault latches, queue and targets clear (§18.1 boot/reset safety).
     pub fn reset(&mut self) {
@@ -381,8 +544,15 @@ impl SimController {
         });
     }
 
-    fn accept(&mut self, cmd: Command) {
-        let what = summarize(&cmd);
+    fn accept(&mut self, incoming: TransportCommand) {
+        let TransportCommand {
+            command,
+            execute_at,
+        } = incoming;
+        let what = match execute_at {
+            Some(execute_at) => format!("{} @ {execute_at}", summarize(&command)),
+            None => summarize(&command),
+        };
         if let Some(code) = &self.latched_fault {
             self.trace.0.push(Event::Rejected {
                 at: self.now,
@@ -391,25 +561,80 @@ impl SimController {
             });
             return;
         }
-        if matches!(cmd, Command::Heartbeat) {
+        if matches!(command, Command::Heartbeat) {
+            if execute_at.is_some() {
+                self.reject(what, "heartbeat cannot be scheduled".to_string());
+                return;
+            }
             self.last_heartbeat = self.now;
             return; // heartbeats are not queued and not traced (volume)
         }
+        let scheduled_for = execute_at.unwrap_or(self.now);
+        if execute_at.is_some() {
+            let status = self.queue_status();
+            if scheduled_for % STEP_TICKS != 0 {
+                self.reject(
+                    what,
+                    format!(
+                        "timestamp {scheduled_for} is not aligned to the {STEP_TICKS}-tick execution quantum"
+                    ),
+                );
+                return;
+            }
+            if scheduled_for < status.earliest_accepted_timestamp {
+                self.reject(
+                    what,
+                    format!(
+                        "timestamp {scheduled_for} is before earliest accepted {}",
+                        status.earliest_accepted_timestamp
+                    ),
+                );
+                return;
+            }
+            if scheduled_for > status.latest_accepted_timestamp {
+                self.reject(
+                    what,
+                    format!(
+                        "timestamp {scheduled_for} is after latest accepted {}",
+                        status.latest_accepted_timestamp
+                    ),
+                );
+                return;
+            }
+        }
         if self.queue.len() >= self.queue_capacity {
-            self.trace.0.push(Event::Rejected {
-                at: self.now,
-                what,
-                reason: "queue full".to_string(),
-            });
+            self.reject(what, "queue full".to_string());
             return;
         }
         self.trace.0.push(Event::Accepted { at: self.now, what });
-        self.queue.push_back(cmd);
+        let queued = QueuedCommand {
+            execute_at: scheduled_for,
+            command,
+        };
+        let insert_at = self
+            .queue
+            .iter()
+            .position(|existing| existing.execute_at > scheduled_for)
+            .unwrap_or(self.queue.len());
+        self.queue.insert(insert_at, queued);
     }
 
-    fn start_queued(&mut self) {
-        while let Some(cmd) = self.queue.pop_front() {
-            match cmd {
+    fn reject(&mut self, what: String, reason: String) {
+        self.trace.0.push(Event::Rejected {
+            at: self.now,
+            what,
+            reason,
+        });
+    }
+
+    fn start_due(&mut self) {
+        while self
+            .queue
+            .front()
+            .is_some_and(|queued| queued.execute_at <= self.now)
+        {
+            let queued = self.queue.pop_front().expect("front was present");
+            match queued.command {
                 Command::Heartbeat => {}
                 Command::SetHeaterTarget {
                     heater,
@@ -457,10 +682,10 @@ impl SimController {
     pub fn run(&mut self, transport: &mut SimTransport, until: Tick) {
         while self.now < until {
             self.now += STEP_TICKS;
-            for cmd in transport.deliver_due(self.now) {
-                self.accept(cmd);
+            for command in transport.deliver_due(self.now) {
+                self.accept(command);
             }
-            self.start_queued();
+            self.start_due();
 
             // Safety envelope: heartbeat loss forces declared safe states
             // (§18.1) — enforced HERE, independent of any host logic.
@@ -720,5 +945,110 @@ mod tests {
         let text = sim.trace.to_json_lines();
         let back = Trace::from_json_lines(&text).unwrap();
         assert_eq!(back, sim.trace);
+    }
+
+    #[test]
+    fn scheduled_commands_obey_the_window_and_execute_in_timestamp_order() {
+        assert!(QueueWindow::new(2, 1).is_err());
+        let (mut sim, mut tx) = rig();
+        let target = |milli_c| Command::SetHeaterTarget {
+            heater: "hotend_heater".into(),
+            target_milli_c: milli_c,
+        };
+
+        // Arrival is at the 1 ms controller step. The default window at
+        // acceptance is therefore [101 ms, 1001 ms]. Send out of execution
+        // order to prove the controller orders by execute_at, not arrival.
+        tx.send_scheduled(0, 300 * TICKS_PER_MS, target(30_000));
+        tx.send_scheduled(0, 250 * TICKS_PER_MS, target(60_000));
+        tx.send_scheduled(0, 100 * TICKS_PER_MS, target(10_000));
+        tx.send_scheduled(0, 1_002 * TICKS_PER_MS, target(20_000));
+        tx.send_scheduled(0, 250 * TICKS_PER_MS + 1, target(40_000));
+
+        sim.run(&mut tx, TICKS_PER_MS);
+        let status = sim.queue_status();
+        assert_eq!(status.capacity, 16);
+        assert_eq!(status.fill_level, 2);
+        assert_eq!(status.earliest_accepted_timestamp, 101 * TICKS_PER_MS);
+        assert_eq!(status.latest_accepted_timestamp, 1_001 * TICKS_PER_MS);
+
+        sim.run(&mut tx, 249 * TICKS_PER_MS);
+        assert!(!sim
+            .trace
+            .0
+            .iter()
+            .any(|event| matches!(event, Event::Executed { .. })));
+        sim.run(&mut tx, 300 * TICKS_PER_MS);
+
+        let executed: Vec<_> = sim
+            .trace
+            .0
+            .iter()
+            .filter_map(|event| match event {
+                Event::Executed { at, what } if what.starts_with("heater ") => {
+                    Some((*at, what.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            executed,
+            [
+                (250 * TICKS_PER_MS, "heater hotend_heater target 60000 mC"),
+                (300 * TICKS_PER_MS, "heater hotend_heater target 30000 mC"),
+            ]
+        );
+        let reasons: Vec<_> = sim
+            .trace
+            .0
+            .iter()
+            .filter_map(|event| match event {
+                Event::Rejected { reason, .. } => Some(reason.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reasons.len(), 3);
+        assert!(reasons
+            .iter()
+            .any(|reason| reason.contains("before earliest")));
+        assert!(reasons.iter().any(|reason| reason.contains("after latest")));
+        assert!(reasons.iter().any(|reason| reason.contains("not aligned")));
+    }
+
+    #[test]
+    fn replay_reports_capture_the_first_divergent_event_and_tick() {
+        let expected = Trace(vec![
+            Event::Accepted {
+                at: 10,
+                what: "home x".into(),
+            },
+            Event::Executed {
+                at: 20,
+                what: "home x".into(),
+            },
+        ]);
+        let matching = expected.replay_report(&expected);
+        assert!(matching.matched);
+        assert!(matching.divergence.is_none());
+
+        let actual = Trace(vec![
+            expected.0[0].clone(),
+            Event::Rejected {
+                at: 18,
+                what: "home x".into(),
+                reason: "late".into(),
+            },
+        ]);
+        let report = actual.replay_report(&expected);
+        assert!(!report.matched);
+        let divergence = report.divergence.as_ref().unwrap();
+        assert_eq!(divergence.event_index, 1);
+        assert_eq!(divergence.first_divergent_tick, Some(18));
+        assert!(matches!(divergence.expected, Some(Event::Executed { .. })));
+        assert!(matches!(divergence.actual, Some(Event::Rejected { .. })));
+
+        let json = report.to_pretty_json();
+        let round_trip: ReplayReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_trip, report);
     }
 }
