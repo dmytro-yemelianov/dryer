@@ -41,6 +41,22 @@ pub struct Requires {
     /// assumed from silence.
     #[serde(default)]
     pub voltage_domains: Vec<String>,
+    /// Bus requirement (§9 `requires.bus`): the connector's pins must
+    /// carry functions of this bus kind, at at least this frequency.
+    #[serde(default)]
+    pub bus: Option<BusReq>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusReq {
+    /// Bus family (`spi`, `i2c`, `uart`) — matched against capability
+    /// token prefixes (`spi1.sck` ⇒ family `spi`, instance `spi1`).
+    pub kind: String,
+    /// Quantity string (`1 MHz`). When set, the chip's bus instance must
+    /// declare a `max_frequency` at least this high — an undeclared
+    /// frequency does not satisfy a requirement.
+    #[serde(default)]
+    pub min_frequency: Option<String>,
 }
 
 impl crate::LoadedPackage {
@@ -61,12 +77,27 @@ impl crate::LoadedPackage {
                 format!("{}: cannot read package.yaml: {e}", self.reference),
             )]
         })?;
-        serde_yaml::from_str(&text).map_err(|e| {
+        let dev: DevicePackageFile = serde_yaml::from_str(&text).map_err(|e| {
             vec![Diagnostic::error(
                 "E0622",
                 format!("{}: device payload does not parse: {e}", self.reference),
             )]
-        })
+        })?;
+        if let Some(fq) = dev
+            .requires
+            .as_ref()
+            .and_then(|r| r.bus.as_ref())
+            .and_then(|b| b.min_frequency.as_ref())
+        {
+            use dryer_machine_schema::{Dimension, Quantity};
+            if let Err(e) = Quantity::parse_as(fq, Dimension::Frequency) {
+                return Err(vec![Diagnostic::error(
+                    "E0623",
+                    format!("{}: requires.bus.min_frequency: {e}", self.reference),
+                )]);
+            }
+        }
+        Ok(dev)
     }
 }
 

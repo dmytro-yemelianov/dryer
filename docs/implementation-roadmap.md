@@ -71,9 +71,13 @@ tests exist and pass, not that a type was declared.
   carries derived `pin_capabilities`, and a declared `max_step_rate` enforces
   exclusive timer channels on step pins (E1310 gpio-only, E1314 conflicts) —
   interleaved with allocation so search steers around reserved channels.
-  *Remaining:* bus/signal requirement matching (§9 `requires.bus` — the frequency
-  data now exists on chip buses), DMA/latency budgets, and compiling safe states
-  into controller artifacts (firmware phases).
+  Slice 9 added **bus matching** (§9
+  `requires.bus`): the bus family must appear in the connector's capabilities and
+  the chip instance must declare a sufficient max_frequency (E1315, hard search
+  filter, recorded in provenance); device packages now drive the expected connector
+  kind for explicit claims, retiring the v0 attribute table wherever a device
+  exists. *Remaining:* DMA/latency budgets, and compiling safe states into
+  controller artifacts (firmware phases).
 - [~] **7. `machine-lock` canonical serialization and hashing** — `dryer-machine-lock`
   produces a deterministic lockfile (canonical JSON bytes + `sha256:` lock hash; YAML
   on disk) binding the machine-source hash, exact package versions with manifest
@@ -109,7 +113,7 @@ tests exist and pass, not that a type was declared.
   (e.g. [dry](https://github.com/dmytro-yemelianov/dry)) as its pre-flight gate —
   a §23.6 to be written.
 - **Timing/bus-signal data model**: [`peripheral-mapping.md`](peripheral-mapping.md)
-  phases 1–3 are implemented for step timing; bus matching remains.
+  is fully implemented (pin tables, wiring check, capabilities, step timing, bus matching).
 - **Simulated controller** (§29 step 9): designed in [`simulator.md`](simulator.md)
   (virtual clock, typed commands before wire frames, safety-envelope enforcement
   from the resolved profile, drift-gated trace goldens); implementation not started.

@@ -33,9 +33,16 @@
 //! E1310 for gpio-only pins, E1314 for channel conflicts, with search
 //! allocation steering around both.
 //!
-//! Deliberately NOT here yet: bus/signal requirement matching, firmware
-//! partitioning, range spans. Lockfile generation lives in
-//! `dryer-machine-lock`.
+//! Slice 9 completed peripheral mapping with **bus/signal matching**
+//! (§9 `requires.bus`): a device's bus family must appear among the
+//! connector's derived capabilities and the chip's bus instance must
+//! declare a sufficient `max_frequency` (E1315; silence never satisfies a
+//! minimum). Device packages now also drive the expected connector kind
+//! for explicit claims, retiring the attribute table wherever a device
+//! exists.
+//!
+//! Deliberately NOT here yet: firmware partitioning, range spans.
+//! Lockfile generation lives in `dryer-machine-lock`.
 
 use dryer_machine_schema::{Diagnostic, Dimension, MachineDoc, Quantity, Severity};
 use dryer_package_model::{board::BoardPackageFile, LocalRegistry, PackageRef};
@@ -534,6 +541,42 @@ fn resolve_doc(
     }
     let doc = &expanded;
 
+    // Device requirements (§9), resolved once per component type over the
+    // EXPANDED graph. This is what replaces the v0 attribute→kind table
+    // wherever a device package exists: compatibility comes from the
+    // device, the attribute only supplies the claim syntax.
+    struct DevReq {
+        reference: String,
+        connector: Option<String>,
+        domains: Vec<String>,
+        bus: Option<dryer_package_model::device::BusReq>,
+    }
+    let mut device_reqs: BTreeMap<String, DevReq> = BTreeMap::new();
+    for comp in doc.components.values() {
+        if device_reqs.contains_key(&comp.kind) {
+            continue;
+        }
+        let Some(dev) = select(&format!("devices/{}", comp.kind)) else {
+            continue;
+        };
+        let Ok(payload) = dev.device_payload() else {
+            continue; // payload errors surface when the device is used
+        };
+        let r = payload.requires;
+        device_reqs.insert(
+            comp.kind.clone(),
+            DevReq {
+                reference: dev.reference.to_string(),
+                connector: r.as_ref().and_then(|r| r.connector.clone()),
+                domains: r
+                    .as_ref()
+                    .map(|r| r.voltage_domains.clone())
+                    .unwrap_or_default(),
+                bus: r.and_then(|r| r.bus),
+            },
+        );
+    }
+
     // --- Phase 6+7: capability matching & explicit-claim allocation ----
     phases_run.push(Phase::CapabilityMatching);
     phases_run.push(Phase::ResourceAllocation);
@@ -561,8 +604,14 @@ fn resolve_doc(
     for (cname, comp) in &doc.components {
         for (attr, val) in &comp.attributes {
             let Some(target) = val.as_str() else { continue };
-            let Some(expected_kind) = claim_kind(attr) else {
-                continue;
+            // The component's device package decides the connector kind
+            // when it has one; the attr table is the documented fallback.
+            let expected_kind: String = match claim_kind(attr) {
+                None => continue, // not a claiming attribute
+                Some(table_kind) => device_reqs
+                    .get(&comp.kind)
+                    .and_then(|d| d.connector.clone())
+                    .unwrap_or_else(|| table_kind.to_string()),
             };
             // The parser guarantees shape and controller existence for
             // SOURCE components; template-expanded components bypass it,
@@ -724,20 +773,14 @@ fn resolve_doc(
         {
             continue; // explicitly claimed above
         }
-        // closure-pinned version first; highest available otherwise
-        let Some(dev) = select(&format!("devices/{}", comp.kind)) else {
+        let Some(dreq) = device_reqs.get(&comp.kind) else {
             continue; // no device package for this type — nothing to search for
         };
-        let Ok(payload) = dev.device_payload() else {
-            continue; // payload errors already surface when explicitly used
-        };
-        let Some(requires) = payload.requires else {
+        let Some(required_kind) = dreq.connector.clone() else {
             continue;
         };
-        let Some(required_kind) = requires.connector else {
-            continue;
-        };
-        let required_domains = requires.voltage_domains;
+        let required_domains = dreq.domains.clone();
+        let required_bus = dreq.bus.clone();
         // Which controller to search: an explicit `controller:` attribute,
         // or the only controller when the machine has exactly one.
         let ctrl_name = match comp.attributes.get("controller").and_then(|v| v.as_str()) {
@@ -806,9 +849,24 @@ fn resolve_doc(
                     .is_some_and(|tok| !timer_claims.contains_key(&format!("{c}.{tok}"))),
             }
         };
+        // §9 bus requirement as a hard search filter, like domains/timing.
+        let bus_ok = |target: &str| -> bool {
+            let Some(bus) = &required_bus else {
+                return true;
+            };
+            target
+                .split_once('.')
+                .and_then(|(c, port)| {
+                    board
+                        .connectors
+                        .get(port)
+                        .map(|conn| (c, derive_pin_capabilities(chips.get(c), conn)))
+                })
+                .is_some_and(|(c, caps)| bus_satisfied(chips.get(c), &caps, bus).is_ok())
+        };
         let chosen = candidates
             .iter()
-            .find(|t| !claims.contains_key(*t) && domain_ok(t) && timing_ok(t));
+            .find(|t| !claims.contains_key(*t) && domain_ok(t) && timing_ok(t) && bus_ok(t));
         let Some(target) = chosen else {
             diagnostics.push(
                 Diagnostic::error(
@@ -843,6 +901,18 @@ fn resolve_doc(
                 required_domains.join(", ")
             ));
         }
+        if let Some(bus) = &required_bus {
+            if let Ok(instance) = bus_satisfied(chips.get(&ctrl_name as &str), &target_caps, bus) {
+                constraints.push(format!(
+                    "{} bus via {instance}{}",
+                    bus.kind,
+                    bus.min_frequency
+                        .as_deref()
+                        .map(|f| format!(" (>= {f})"))
+                        .unwrap_or_default()
+                ));
+            }
+        }
         if max_step_rate.is_some() && required_kind == "stepper_driver_socket" {
             if let Some(tok) = target_caps
                 .get("step")
@@ -866,7 +936,7 @@ fn resolve_doc(
             .or_default()
             .push(Assignment {
                 requested_by: cname.clone(),
-                via: format!("requires.connector ({})", dev.reference),
+                via: format!("requires.connector ({})", dreq.reference),
                 resource: ResourceId(target.clone()),
                 connector_kind: required_kind.clone(),
                 candidates_considered: candidates.clone(),
@@ -888,44 +958,58 @@ fn resolve_doc(
     //     truthful to validate against (stated in the roadmap).
     phases_run.push(Phase::ElectricalValidation);
     for (cname, comp) in &doc.components {
-        let Some(dev) = select(&format!("devices/{}", comp.kind)) else {
+        let Some(dreq) = device_reqs.get(&comp.kind) else {
             continue;
         };
-        let Ok(payload) = dev.device_payload() else {
-            continue;
-        };
-        let domains = payload
-            .requires
-            .map(|r| r.voltage_domains)
-            .unwrap_or_default();
-        if domains.is_empty() {
-            continue;
-        }
         for assignment in resolved.assignments.get(cname).into_iter().flatten() {
             let Some((ctrl, port)) = assignment.resource.0.split_once('.') else {
                 continue;
             };
-            let connector_domain = boards
-                .get(ctrl)
-                .and_then(|b| b.connectors.get(port))
-                .and_then(|c| c.voltage_domain.clone());
-            let ok = connector_domain
-                .as_deref()
-                .is_some_and(|d| domains.iter().any(|r| r == d));
-            if !ok {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "E1302",
-                        format!(
-                            "component '{cname}': device '{}' requires voltage domain [{}] but '{}' declares {}",
-                            dev.reference,
-                            domains.join(", "),
-                            assignment.resource.0,
-                            connector_domain.as_deref().unwrap_or("none"),
-                        ),
-                    )
-                    .at(format!("components.{cname}")),
-                );
+            if !dreq.domains.is_empty() {
+                let connector_domain = boards
+                    .get(ctrl)
+                    .and_then(|b| b.connectors.get(port))
+                    .and_then(|c| c.voltage_domain.clone());
+                let ok = connector_domain
+                    .as_deref()
+                    .is_some_and(|d| dreq.domains.iter().any(|r| r == d));
+                if !ok {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "E1302",
+                            format!(
+                                "component '{cname}': device '{}' requires voltage domain [{}] but '{}' declares {}",
+                                dreq.reference,
+                                dreq.domains.join(", "),
+                                assignment.resource.0,
+                                connector_domain.as_deref().unwrap_or("none"),
+                            ),
+                        )
+                        .at(format!("components.{cname}")),
+                    );
+                }
+            }
+            if let Some(bus) = &dreq.bus {
+                if let Err(reason) =
+                    bus_satisfied(chips.get(ctrl), &assignment.pin_capabilities, bus)
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "E1315",
+                            format!(
+                                "component '{cname}': device '{}' requires a {} bus{} on '{}' — {reason}",
+                                dreq.reference,
+                                bus.kind,
+                                bus.min_frequency
+                                    .as_deref()
+                                    .map(|f| format!(" (>= {f})"))
+                                    .unwrap_or_default(),
+                                assignment.resource.0,
+                            ),
+                        )
+                        .at(format!("components.{cname}")),
+                    );
+                }
             }
         }
     }
@@ -1092,6 +1176,54 @@ fn derive_pin_capabilities(
         }
     }
     out
+}
+
+/// Does the connector (via its derived capabilities) satisfy a §9 bus
+/// requirement? Returns the matched bus instance, or the reason it fails.
+/// An undeclared bus frequency never satisfies a minimum — silence is not
+/// electrical compatibility.
+fn bus_satisfied(
+    chip: Option<&dryer_package_model::chip::ChipPackageFile>,
+    caps: &BTreeMap<String, Vec<String>>,
+    req: &dryer_package_model::device::BusReq,
+) -> Result<String, String> {
+    let instance = caps.values().flatten().find_map(|tok| {
+        let inst = tok.split('.').next().unwrap_or(tok);
+        let family = inst.trim_end_matches(|c: char| c.is_ascii_digit());
+        (family == req.kind).then(|| inst.to_string())
+    });
+    let Some(instance) = instance else {
+        return Err(format!("no {} function on any connector pin", req.kind));
+    };
+    let Some(min_raw) = &req.min_frequency else {
+        return Ok(instance);
+    };
+    let min = Quantity::parse_as(min_raw, Dimension::Frequency).map_err(|e| e.to_string())?;
+    let Some(chip) = chip else {
+        return Err("no chip table to verify the bus frequency against".to_string());
+    };
+    let declared = chip
+        .peripherals
+        .spi
+        .iter()
+        .chain(&chip.peripherals.i2c)
+        .find(|b| b.id == instance)
+        .and_then(|b| b.max_frequency.as_ref());
+    match declared {
+        None => Err(format!(
+            "bus '{instance}' declares no max_frequency (required >= {min_raw})"
+        )),
+        Some(fq) => {
+            let f = Quantity::parse_as(fq, Dimension::Frequency).map_err(|e| e.to_string())?;
+            if f.value >= min.value {
+                Ok(instance)
+            } else {
+                Err(format!(
+                    "bus '{instance}' max_frequency {fq} < required {min_raw}"
+                ))
+            }
+        }
+    }
 }
 
 /// v0.1 claim-compatibility table: which connector kind each claiming
@@ -1356,6 +1488,58 @@ mod tests {
         assert!(d.message.contains("cartesian") && d.message.contains("corexy"));
     }
 
+    /// §9 bus matching: the adxl345 (spi >= 1 MHz, logic_3v3) is
+    /// search-allocated to accel0, whose pins reach spi1 (42 MHz); the
+    /// gpio-only accel1 is skipped as a hard filter.
+    #[test]
+    fn a_bus_requirement_steers_search_to_a_capable_socket() {
+        let with_accel =
+            fixture().replace("kinematics:", "  imu:\n    type: adxl345\n\nkinematics:");
+        let o = resolve_source(&with_accel, &registry());
+        assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
+        let g = o.resolved.unwrap();
+        let imu = &g.assignments["imu"][0];
+        assert_eq!(imu.resource.0, "mainboard.accel0");
+        assert!(
+            imu.constraints_applied
+                .iter()
+                .any(|c| c.contains("spi bus via spi1")),
+            "constraints: {:?}",
+            imu.constraints_applied
+        );
+    }
+
+    /// An explicit claim onto a socket with no SPI function is E1315.
+    #[test]
+    fn an_explicit_claim_without_the_required_bus_is_rejected() {
+        let bad = fixture().replace(
+            "kinematics:",
+            "  imu:\n    type: adxl345\n    connected_to: mainboard.accel1\n\nkinematics:",
+        );
+        let o = resolve_source(&bad, &registry());
+        assert!(!o.is_ok());
+        let d = o.diagnostics.iter().find(|d| d.code == "E1315").unwrap();
+        assert!(d.message.contains("no spi function"), "{}", d.message);
+    }
+
+    /// A bus-frequency demand above what the chip declares fails with
+    /// both numbers in the message.
+    #[test]
+    fn a_bus_frequency_above_the_chips_ceiling_is_rejected() {
+        let bad = fixture().replace(
+            "kinematics:",
+            "  cam:\n    type: fast-cam\n    connected_to: mainboard.accel0\n\nkinematics:",
+        );
+        let o = resolve_source(&bad, &registry());
+        assert!(!o.is_ok());
+        let d = o.diagnostics.iter().find(|d| d.code == "E1315").unwrap();
+        assert!(
+            d.message.contains("42 MHz") && d.message.contains("80 MHz"),
+            "{}",
+            d.message
+        );
+    }
+
     /// Pin capabilities ride every assignment: the explicit x_driver claim
     /// carries the chip functions behind motor0's pins.
     #[test]
@@ -1466,7 +1650,7 @@ mod tests {
         assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
         let pkgs = o.resolved.unwrap().packages;
         assert!(
-            pkgs.contains(&"chips/generic-mcu@1.3.0".to_string()),
+            pkgs.contains(&"chips/generic-mcu@1.4.0".to_string()),
             "transitive dep at max satisfying (1.3.0 supersedes 1.2.0): {pkgs:?}"
         );
         assert!(pkgs.contains(&"boards/example-mainboard@1.0.0".to_string()));

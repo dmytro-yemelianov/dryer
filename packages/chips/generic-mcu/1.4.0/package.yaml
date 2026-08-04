@@ -1,0 +1,57 @@
+package:
+  namespace: chips
+  name: generic-mcu
+  version: 1.4.0
+  kind: chip
+
+architecture:
+  family: arm
+
+peripherals:
+  timers:
+    - id: tim1
+      channels: 4
+    - id: tim3
+      channels: 4
+  spi:
+    - id: spi1
+      max_frequency: 42 MHz
+  uart:
+    - id: uart1
+  adc:
+    - id: adc1
+      channels: 16
+
+# pin -> capability tokens: "gpio" or "<peripheral>.<sub>". Capability,
+# not wiring (§7): which board pin reaches which peripheral function.
+pin_functions:
+  PE11: [tim1.ch2, gpio]
+  PE10: [gpio]
+  PE9: [gpio]
+  PE7: [uart1.rx, gpio]
+  PD5: [tim3.ch3, gpio]
+  PD4: [gpio]
+  PD3: [gpio]
+  PD1: [uart1.tx, gpio]
+  PE13: [tim1.ch2, gpio]
+  PE14: [gpio]
+  PE15: [gpio]
+  PE8: [gpio]
+  PC6: [gpio]
+  PC7: [gpio]
+  PC8: [gpio]
+  PC9: [gpio]
+  PD7: [gpio]
+  PD8: [gpio]
+  PD9: [gpio]
+  PD10: [gpio]
+  PA2: [tim3.ch4, gpio]
+  PF4: [adc1.ch4]
+  PA5: [spi1.sck, gpio]
+  PA6: [spi1.miso, gpio]
+  PA7: [spi1.mosi, gpio]
+  PB0: [gpio]
+  PD11: [gpio]
+  PD12: [gpio]
+  PD13: [gpio]
+  PD14: [gpio]

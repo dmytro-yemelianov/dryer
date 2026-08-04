@@ -1,0 +1,21 @@
+package:
+  namespace: devices
+  name: adxl345
+  version: 1.2.0
+  kind: device
+
+device:
+  class: accelerometer
+  model: adxl345
+
+requires:
+  connector: accessory_socket
+  voltage_domains:
+    - logic_3v3
+  bus:
+    kind: spi
+    min_frequency: 1 MHz
+
+capabilities:
+  - acceleration.sample
+  - acceleration.stream

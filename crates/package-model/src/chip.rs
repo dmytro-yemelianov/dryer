@@ -141,7 +141,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
         let reg = crate::LocalRegistry::load(&root);
         let chip = reg.find("chips", "generic-mcu").expect("fixture chip");
-        assert_eq!(chip.reference.version, semver::Version::new(1, 3, 0));
+        assert_eq!(chip.reference.version, semver::Version::new(1, 4, 0));
         let payload = chip.chip_payload().expect("payload parses");
         assert_eq!(payload.pin_functions["PE11"], vec!["tim1.ch2", "gpio"]);
         assert_eq!(payload.peripherals.timers.len(), 2);

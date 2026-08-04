@@ -373,11 +373,11 @@ mod tests {
         let versions = reg.versions("chips", "generic-mcu");
         assert_eq!(
             versions.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
-            vec!["1.0.0", "1.2.0", "1.3.0"]
+            vec!["1.0.0", "1.2.0", "1.3.0", "1.4.0"]
         );
         assert_eq!(
             reg.find("chips", "generic-mcu").unwrap().reference.version,
-            semver::Version::new(1, 3, 0),
+            semver::Version::new(1, 4, 0),
             "find() returns the highest version"
         );
         assert!(reg

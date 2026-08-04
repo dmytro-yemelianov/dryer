@@ -59,6 +59,24 @@ connectors:
     pin: PF4
     pullup: 4.7 kOhm
 
+  accel0:
+    kind: accessory_socket
+    pins:
+      sck: PA5
+      miso: PA6
+      mosi: PA7
+      cs: PB0
+    voltage_domain: logic_3v3
+
+  accel1:
+    kind: accessory_socket
+    pins:
+      sck: PD11
+      miso: PD12
+      mosi: PD13
+      cs: PD14
+    voltage_domain: logic_3v3
+
 transports:
   usb:
     peripheral: usb_fs

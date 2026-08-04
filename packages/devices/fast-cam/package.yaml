@@ -1,0 +1,15 @@
+package:
+  namespace: devices
+  name: fast-cam
+  version: 1.0.0
+  kind: device
+
+device:
+  class: camera
+  model: fast-cam
+
+requires:
+  connector: accessory_socket
+  bus:
+    kind: spi
+    min_frequency: 80 MHz
