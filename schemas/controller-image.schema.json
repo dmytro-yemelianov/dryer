@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dryer.yemelianov.dev/schemas/controller-image.schema.json",
+  "title": "Dryer controller image v1",
+  "description": "Canonical inspectable reference-backend image. This container is not an executable MCU program.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "controller",
+    "lock_hash",
+    "board",
+    "chip",
+    "target_triple",
+    "toolchain",
+    "build_profile",
+    "protocol_version",
+    "abi_version",
+    "flash_bytes",
+    "ram_bytes",
+    "bootloader_offset_bytes",
+    "features",
+    "native_drivers",
+    "resolved_resources",
+    "safety"
+  ],
+  "properties": {
+    "schema": { "const": "dryer.controller-image/v1" },
+    "controller": { "$ref": "#/$defs/identifier" },
+    "lock_hash": { "$ref": "#/$defs/sha256" },
+    "board": { "$ref": "#/$defs/package_ref" },
+    "chip": { "$ref": "#/$defs/package_ref" },
+    "target_triple": { "type": "string", "minLength": 1 },
+    "toolchain": { "type": "string", "minLength": 1 },
+    "build_profile": { "type": "string", "minLength": 1 },
+    "protocol_version": { "$ref": "#/$defs/versioned_interface" },
+    "abi_version": { "$ref": "#/$defs/versioned_interface" },
+    "flash_bytes": { "type": "integer", "minimum": 1 },
+    "ram_bytes": { "type": "integer", "minimum": 1 },
+    "bootloader_offset_bytes": { "type": "integer", "minimum": 0 },
+    "features": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "native_drivers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/package_ref" }
+    },
+    "resolved_resources": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "safety": { "$ref": "#/$defs/controller_safety" }
+  },
+  "$defs": {
+    "identifier": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "package_ref": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*/[a-z][a-z0-9_-]*@.+$" },
+    "versioned_interface": { "type": "string", "pattern": "^[a-z.]+/v[1-9][0-9]*$" },
+    "controller_safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "states"],
+      "properties": {
+        "schema": { "const": "dryer.controller-safety/v1" },
+        "states": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/safe_state" }
+        }
+      }
+    },
+    "safe_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "class", "resource", "state"],
+      "properties": {
+        "component": { "$ref": "#/$defs/identifier" },
+        "class": { "$ref": "#/$defs/identifier" },
+        "resource": { "type": "string", "minLength": 1 },
+        "state": { "enum": ["off", "disabled"] },
+        "heartbeat_timeout_us": { "type": "integer", "minimum": 1 },
+        "sensor": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

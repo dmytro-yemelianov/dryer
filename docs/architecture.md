@@ -15,7 +15,7 @@ Control protocol             — none
 MCU runtime                  — simulator (behavioral test model, no firmware)
 Hardware                     — none
 ─────────────────────────────────────────────
-Firmware input artifacts     — firmware-build (safety config + build plans; no executor)
+Firmware artifacts           — firmware-build (safety, build plans, reference images)
 Deployment planning          — firmware-flash (read-only plans; no executor)
 Reproducibility              — machine-lock
 Machine resolution           — machine-resolver
@@ -40,7 +40,7 @@ mutating deployment implementation.
 | `machine-resolver` | all four crates above |
 | `machine-lock` | schema, parser, package model, resolver |
 | `firmware-build` | `machine-lock` |
-| `firmware-flash` | `machine-lock`, `package-model` |
+| `firmware-flash` | `machine-lock`, `package-model`, `firmware-build` |
 | `simulator` | none in its public library; firmware-build/lock/resolution crates in end-to-end test dependencies |
 
 - `machine-schema` is the leaf: document types, quantities, identifiers, and the
@@ -56,11 +56,12 @@ mutating deployment implementation.
 - `machine-lock` captures successful resolution, portable registry identity and exact
   descriptor hash, exact package-tree content digests, controller-local safety
   bindings, and deterministic firmware target/build inputs. `firmware-build` turns
-  those bindings into versioned, byte-stable safety
-  and build-plan artifacts without rereading package policy or target metadata.
-  `firmware-flash` consumes the lock and board-package metadata, rejects registry
-  identity, descriptor, manifest, or companion-file drift, but cannot call back into
-  resolution or mutate hardware.
+  those bindings into versioned, byte-stable safety/build plans and an inspectable
+  reference controller image without rereading package policy or target metadata.
+  The plan pins the exact image size and hash while explicitly marking it
+  non-deployable. `firmware-flash` consumes the same derived build output plus the lock
+  and board metadata, rejects registry, package, plan, or artifact drift, but cannot
+  call back into resolution or mutate hardware.
 - The simulator's public semantic types stay independent of configuration crates;
   only its tests adapt the compiled controller artifact into simulated inputs.
 
@@ -69,9 +70,9 @@ mutating deployment implementation.
 `machine-parser` owns the **source graph**. `machine-resolver` expands templates and
 produces a separate `ResolvedGraph`; it never mutates `MachineDoc`. `machine-lock`
 serializes a reproducibility projection of that result. `firmware-build` creates
-controller-safety and controller-build-plan artifacts from each locked partition. A
-flash plan binds a locked controller to an observed USB candidate and artifact, but it
-is not yet a
+controller-safety, controller-build-plan, and reference-image artifacts from each
+locked partition. A flash plan binds a locked controller to an observed USB candidate
+and verified artifact, but it is not yet a
 `DeployedGraph`: activation, confirmation, and persistent physical-controller identity
 do not exist. Runtime observation remains a future state-service type.
 

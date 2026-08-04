@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dryer.yemelianov.dev/schemas/flash-plan.schema.json",
+  "title": "Dryer flash plan v0.2",
+  "description": "Deterministic, non-mutating deployment plan with build-derived artifact identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "mode",
+    "ready",
+    "controller",
+    "lock_hash",
+    "board",
+    "method",
+    "transport",
+    "device_selection",
+    "expected_current_firmware",
+    "artifact",
+    "steps",
+    "blocked_reasons",
+    "recovery"
+  ],
+  "properties": {
+    "schema": { "const": "dryer.flash-plan/v0.2" },
+    "mode": { "const": "dry_run" },
+    "ready": { "type": "boolean" },
+    "controller": { "$ref": "#/$defs/identifier" },
+    "lock_hash": { "$ref": "#/$defs/sha256" },
+    "board": { "$ref": "#/$defs/package_ref" },
+    "method": { "$ref": "#/$defs/identifier" },
+    "transport": { "$ref": "#/$defs/identifier" },
+    "device_selection": { "$ref": "#/$defs/device_selection" },
+    "expected_current_firmware": { "type": "string", "minLength": 1 },
+    "artifact": { "$ref": "#/$defs/artifact" },
+    "steps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/step" }
+    },
+    "blocked_reasons": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "recovery": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "$defs": {
+    "identifier": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "package_ref": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*/[a-z][a-z0-9_-]*@.+$" },
+    "usb_rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["usb_vid", "usb_pid"],
+      "properties": {
+        "usb_vid": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "usb_pid": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "serial_number": { "type": "string", "minLength": 1 },
+        "manufacturer": { "type": "string", "minLength": 1 },
+        "product": { "type": "string", "minLength": 1 }
+      }
+    },
+    "usb_device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "bus_id",
+        "location",
+        "device_address",
+        "usb_vid",
+        "usb_pid",
+        "serial_number",
+        "manufacturer",
+        "product"
+      ],
+      "properties": {
+        "platform": { "type": "string", "minLength": 1 },
+        "bus_id": { "type": "string", "minLength": 1 },
+        "location": { "type": "string", "minLength": 1 },
+        "device_address": { "type": "integer", "minimum": 0 },
+        "usb_vid": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "usb_pid": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "serial_number": { "type": ["string", "null"] },
+        "manufacturer": { "type": ["string", "null"] },
+        "product": { "type": ["string", "null"] }
+      }
+    },
+    "device_selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "status", "candidates"],
+      "properties": {
+        "rule": { "$ref": "#/$defs/usb_rule" },
+        "status": { "enum": ["missing", "unique", "ambiguous"] },
+        "candidates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/usb_device" }
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "path",
+        "size_bytes",
+        "expected_sha256",
+        "observed_sha256",
+        "hash_matches",
+        "deployable",
+        "signature"
+      ],
+      "properties": {
+        "format": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "expected_sha256": { "$ref": "#/$defs/sha256" },
+        "observed_sha256": { "$ref": "#/$defs/sha256" },
+        "hash_matches": { "type": "boolean" },
+        "deployable": { "type": "boolean" },
+        "signature": { "type": ["string", "null"] }
+      }
+    },
+    "step": {
+      "oneOf": [
+        { "$ref": "#/$defs/simple_step" },
+        { "$ref": "#/$defs/check_step" },
+        { "$ref": "#/$defs/bootloader_step" },
+        { "$ref": "#/$defs/flash_step" },
+        { "$ref": "#/$defs/verify_step" },
+        { "$ref": "#/$defs/confirm_step" }
+      ]
+    },
+    "simple_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action"],
+      "properties": { "action": { "enum": ["inspect_artifact", "select_device"] } }
+    },
+    "check_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "expected"],
+      "properties": {
+        "action": { "const": "check_current_firmware" },
+        "expected": { "type": "string", "minLength": 1 }
+      }
+    },
+    "bootloader_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "instruction"],
+      "properties": {
+        "action": { "const": "enter_bootloader" },
+        "instruction": { "type": "string", "minLength": 1 }
+      }
+    },
+    "flash_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "method", "transport"],
+      "properties": {
+        "action": { "const": "flash_artifact" },
+        "method": { "$ref": "#/$defs/identifier" },
+        "transport": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "verify_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "method"],
+      "properties": {
+        "action": { "const": "verify_artifact" },
+        "method": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "confirm_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "expected"],
+      "properties": {
+        "action": { "const": "confirm_board" },
+        "expected": { "$ref": "#/$defs/package_ref" }
+      }
+    }
+  }
+}

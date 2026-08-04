@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dryer.yemelianov.dev/schemas/lockfile.schema.json",
   "title": "Dryer machine.lock v5",
-  "description": "Generated capture of one successful resolution. Users do not edit it. Normative reference implementation: crates/machine-lock. v5 adds a portable, validated registry identity and hashes the exact registry descriptor bytes. Exact package content remains pinned independently. Expected reproducible firmware output hashes remain deferred.",
+  "description": "Generated capture of one successful resolution. Users do not edit it. Normative reference implementation: crates/machine-lock. v5 adds a portable, validated registry identity and hashes the exact registry descriptor bytes. Exact package content remains pinned independently. Reproducible output hashes are derived in controller build-plan v2 to avoid a lock/output hash cycle.",
   "type": "object",
   "additionalProperties": false,
   "required": ["lock_version", "machine_hash", "resolver_version", "registry_source", "packages", "safety_profile", "controllers"],

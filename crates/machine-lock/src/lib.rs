@@ -5,8 +5,9 @@
 //! full-content digests (§6.6), manifest hashes, the machine-source hash,
 //! resolver and registry-source identity, the pinned safety profile, and
 //! per-controller resolved resources plus compiled controller safety and
-//! firmware build inputs. Expected reproducible output hashes remain deferred
-//! until a real firmware backend exists.
+//! firmware build inputs. Reproducible output hashes are derived from this
+//! lock in build-plan v2 rather than inserted here, avoiding a lock/output
+//! hash cycle.
 //!
 //! Canonical form: JSON with every map a `BTreeMap`, so byte-identical
 //! lockfiles for identical inputs. The on-disk file is YAML for humans;

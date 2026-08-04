@@ -1,7 +1,7 @@
 {
-  "schema": "dryer.flash-plan/v0.1",
+  "schema": "dryer.flash-plan/v0.2",
   "mode": "dry_run",
-  "ready": true,
+  "ready": false,
   "controller": "mainboard",
   "lock_hash": "sha256:b44687b2848ac7c787d5ea2c7fd82f69230eb5d0df00be27b5bbcfec44b42010",
   "board": "boards/example-mainboard@1.0.0",
@@ -29,11 +29,13 @@
   },
   "expected_current_firmware": "dryer-simulator/0.1.0",
   "artifact": {
-    "path": "examples/minimal-cartesian/firmware.fixture.bin",
-    "size_bytes": 39,
-    "expected_sha256": "sha256:6c92abd61b162679e332cdad7b2a7753d1888de5fecb3363331207ca99d73c2a",
-    "observed_sha256": "sha256:6c92abd61b162679e332cdad7b2a7753d1888de5fecb3363331207ca99d73c2a",
+    "format": "dryer.controller-image/v1",
+    "path": "build/mainboard/firmware.dryer.json",
+    "size_bytes": 1285,
+    "expected_sha256": "sha256:fb184c74859e597669fe61f80e24812a3f921408e6328125a0f60a2efac82dca",
+    "observed_sha256": "sha256:fb184c74859e597669fe61f80e24812a3f921408e6328125a0f60a2efac82dca",
     "hash_matches": true,
+    "deployable": false,
     "signature": null
   },
   "steps": [
@@ -65,7 +67,9 @@
       "expected": "boards/example-mainboard@1.0.0"
     }
   ],
-  "blocked_reasons": [],
+  "blocked_reasons": [
+    "artifact format 'dryer.controller-image/v1' is an inspectable reference image, not a deployable controller executable"
+  ],
   "recovery": [
     "Re-enter DFU mode and retry with the same locked artifact.",
     "If DFU is unavailable, use the board's hardware recovery probe."

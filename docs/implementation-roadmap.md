@@ -105,7 +105,7 @@ tests exist and pass, not that a type was declared.
   target triple, toolchain, build profile, protocol/ABI versions, and feature flags;
   the resolver combines those with exact board/chip packages and selected native
   device drivers. Missing target metadata is blocking (E1600/E1601/E1602).
-- [~] **7. `machine-lock` canonical serialization and hashing** — `dryer-machine-lock`
+- [x] **7. `machine-lock` canonical serialization and hashing** — `dryer-machine-lock`
   produces a deterministic lockfile (canonical JSON bytes + `sha256:` lock hash; YAML
   on disk) binding the machine-source hash, exact package versions, resolver version,
   and per-controller resolved resources. Golden at
@@ -123,9 +123,14 @@ tests exist and pass, not that a type was declared.
   validated logical registry id and portable non-`file:` URI plus a sha256 over the
   exact `registry.yaml` descriptor bytes. Descriptorless registries remain inspectable
   but cannot produce v5 locks; flash planning compares the live descriptor before
-  reading board metadata or artifacts; legacy v1-v4 locks remain readable. *Remaining
-  for [x]:* expected reproducible firmware output hashes, which require a real
-  firmware backend.
+  reading board metadata or artifacts; legacy v1-v4 locks remain readable. Slice 16
+  completed the remaining **reproducible output contract** (§21.1): build-plan v2
+  records the exact format, stable path, byte length, and SHA-256 emitted by the
+  deterministic `dryer.controller-image/v1` reference backend. The canonical image is
+  lock-bound, inspectable, drift-gated, and independently verified by flash planning.
+  It is explicitly `deployable: false`, so no planning path can mistake the reference
+  configuration container for executable MCU firmware. A native target runtime and
+  linker backend remain later firmware work, not an unpinned lockfile default.
 - [ ] **8. Klipper config and build-parameter export** *(license/provenance record
   required first — §23.5)*
 - [x] **9. Simulated controller and end-to-end golden tests** — `dryer-simulator`
@@ -153,8 +158,9 @@ tests exist and pass, not that a type was declared.
   and multi-match results are blocking states; selection never falls back to a partial
   match. Board packages now carry validated flash recipes (method, bootloader-mode
   selector, transition instructions, sha256 verification, recovery). The planner
-  verifies registry manifest/full-content drift and artifact bytes, then emits versioned,
-  byte-stable JSON containing expected current firmware, exact board identity,
+  verifies registry manifest/full-content drift and artifact bytes against the derived
+  build-plan output pin, then emits versioned, byte-stable JSON containing expected
+  current firmware, exact board identity, artifact format/deployment eligibility,
   signature slot, planned steps, and recovery. The public API and example CLI are
   deliberately read-only: no method can open or flash a device. The fixture plan is
   drift-gated at `examples/minimal-cartesian/flash-plan.golden.json`; see

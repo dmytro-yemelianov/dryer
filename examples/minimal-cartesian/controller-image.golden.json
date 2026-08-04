@@ -1,5 +1,5 @@
 {
-  "schema": "dryer.controller-build-plan/v2",
+  "schema": "dryer.controller-image/v1",
   "controller": "mainboard",
   "lock_hash": "sha256:b44687b2848ac7c787d5ea2c7fd82f69230eb5d0df00be27b5bbcfec44b42010",
   "board": "boards/example-mainboard@1.0.0",
@@ -45,12 +45,5 @@
         "state": "disabled"
       }
     ]
-  },
-  "expected_artifact": {
-    "format": "dryer.controller-image/v1",
-    "path": "build/mainboard/firmware.dryer.json",
-    "size_bytes": 1285,
-    "sha256": "sha256:fb184c74859e597669fe61f80e24812a3f921408e6328125a0f60a2efac82dca",
-    "deployable": false
   }
 }

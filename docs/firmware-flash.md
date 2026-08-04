@@ -68,17 +68,21 @@ for example, Windows may not expose a cached manufacturer string.
 
 ## Dry-run plan
 
-`plan_dry_run` requires a controller from `machine.lock`, the locked local registry,
-a discovered inventory, a firmware artifact plus expected sha256, and the expected
-current firmware identity. It verifies:
+`plan_dry_run` requires a controller from `machine.lock`, its persisted build-plan v2,
+the locked local registry, a discovered inventory, a firmware artifact, and the
+expected current firmware identity. It verifies:
 
 - the live registry's portable source id, URI, and exact descriptor hash match
   lockfile v5;
+- the persisted build plan is byte-for-byte reproducible from the lock before any
+  artifact IO;
 - the controller has exactly one version-pinned board package;
 - the local board manifest still matches its lockfile hash;
 - every file in the local board package still matches the v2 content hash;
 - the board has a valid default flash recipe;
-- the artifact's observed sha256 equals the expected build digest;
+- the artifact's observed size and sha256 equal the expected build output;
+- a hash-matching reference image has canonical encoding and matches every locked
+  build-plan field;
 - device selection is unique.
 
 Artifact-hash mismatch and missing/ambiguous devices are reported together in
@@ -89,28 +93,34 @@ Legacy v1-v4 locks remain readable and keep their historical package-drift check
 New v5 plans additionally fail before artifact or device planning when
 `packages/registry.yaml` is absent, invalid, or differs from the locked source.
 
-The `dryer.flash-plan/v0.1` JSON records the lock hash, exact board, selection rule and
-candidates, expected current firmware, observed and expected artifact hashes, optional
-signature, ordered would-run steps, blockers, and recovery instructions. The artifact
-has separate host and plan paths so a bundle-relative plan stays byte-stable even when
-generated from an absolute local path.
+The `dryer.flash-plan/v0.2` JSON records the lock hash, exact board, selection rule and
+candidates, expected current firmware, artifact format/deployment eligibility,
+observed and expected artifact hashes, optional signature, ordered would-run steps,
+blockers, and recovery instructions. The stable artifact path comes from the derived
+build plan, so the plan stays byte-identical when the host reads it from another path.
 
-The committed minimal-Cartesian fixture includes a synthetic artifact, USB inventory,
-and golden plan. To exercise the read-only example with that inventory:
+The current `dryer.controller-image/v1` reference image is intentionally
+non-executable and therefore adds a deployment blocker even when its hash matches.
+This prevents the dry-run boundary from presenting a configuration container as a
+flashable MCU program.
+
+The committed minimal-Cartesian fixture includes the reference backend output, USB
+inventory, and golden plan. To exercise the read-only example with that inventory:
 
 ```bash
 cargo run -p dryer-firmware-flash --example plan -- \
   examples/minimal-cartesian/machine.lock \
   packages \
   mainboard \
-  examples/minimal-cartesian/firmware.fixture.bin \
-  sha256:6c92abd61b162679e332cdad7b2a7753d1888de5fecb3363331207ca99d73c2a \
+  examples/minimal-cartesian/controller-build-plan.golden.json \
+  examples/minimal-cartesian/controller-image.golden.json \
   dryer-simulator/0.1.0 \
   --inventory examples/minimal-cartesian/usb-inventory.fixture.json
 ```
 
 Omit `--inventory` to perform read-only discovery on the current host. Exit status is
-0 for a ready plan, 1 for a plan with blockers, and 2 when plan construction fails.
+0 for a ready plan, 1 for a plan with blockers (including the current reference image),
+and 2 when plan construction fails.
 
 ## Deferred execution boundary
 

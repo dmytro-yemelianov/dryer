@@ -96,6 +96,7 @@ dependencies = [
 name = "dryer-firmware-flash"
 version = "0.1.0"
 dependencies = [
+ "dryer-firmware-build",
  "dryer-machine-lock",
  "dryer-package-model",
  "nusb",

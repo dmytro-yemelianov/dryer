@@ -1,13 +1,13 @@
-//! Deterministic controller firmware inputs (spec §11.2 phase 12, §21.1).
+//! Deterministic controller firmware images (spec §11.2 phase 12, §21.1).
 //!
-//! This crate is deliberately a build-input boundary, not a firmware
-//! executor: it turns controller-local safety and target metadata pinned by
-//! `machine.lock` into byte-stable JSON. A future firmware backend must consume
-//! these values unchanged; no host-only initialization may override them.
+//! The reference backend turns controller-local safety and target metadata
+//! pinned by `machine.lock` into a byte-stable, inspectable controller-image
+//! container and records its exact output hash in the build plan. The image is
+//! a configuration/runtime handoff, not an executable MCU program; a native
+//! target backend must consume the same locked inputs without overriding them.
 
 use dryer_machine_lock::{
-    LockedPackage, LockedSafeState, LockedSafetyConfig, Lockfile, CONTROLLER_BUILD_SCHEMA,
-    CONTROLLER_SAFETY_SCHEMA,
+    LockedPackage, LockedSafeState, LockedSafetyConfig, Lockfile, CONTROLLER_SAFETY_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,6 +16,8 @@ use std::fmt;
 
 pub const MINIMUM_LOCK_VERSION: u32 = 3;
 pub const BUILD_PLAN_MINIMUM_LOCK_VERSION: u32 = 4;
+pub const CONTROLLER_BUILD_PLAN_SCHEMA: &str = "dryer.controller-build-plan/v2";
+pub const CONTROLLER_IMAGE_SCHEMA: &str = "dryer.controller-image/v1";
 
 /// Versioned, controller-local safety payload ready for firmware embedding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,10 +29,9 @@ pub struct ControllerSafetyArtifact {
     pub states: Vec<LockedSafeState>,
 }
 
-/// Versioned, deterministic firmware build plan. This is a toolchain input,
-/// not a build execution API: it contains every selected target input but
-/// performs no compilation and predicts no output hash.
+/// Versioned, deterministic firmware build plan and expected backend output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ControllerBuildPlanArtifact {
     pub schema: String,
     pub controller: String,
@@ -49,6 +50,49 @@ pub struct ControllerBuildPlanArtifact {
     pub native_drivers: Vec<String>,
     pub resolved_resources: BTreeMap<String, String>,
     pub safety: LockedSafetyConfig,
+    pub expected_artifact: ExpectedFirmwareArtifact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedFirmwareArtifact {
+    pub format: String,
+    pub path: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    /// False for the inspectable reference container; a native backend must
+    /// explicitly mark a target executable as deployable.
+    pub deployable: bool,
+}
+
+/// Canonical payload emitted by the reference controller-image backend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControllerImageManifest {
+    pub schema: String,
+    pub controller: String,
+    pub lock_hash: String,
+    pub board: String,
+    pub chip: String,
+    pub target_triple: String,
+    pub toolchain: String,
+    pub build_profile: String,
+    pub protocol_version: String,
+    pub abi_version: String,
+    pub flash_bytes: u64,
+    pub ram_bytes: u64,
+    pub bootloader_offset_bytes: u64,
+    pub features: Vec<String>,
+    pub native_drivers: Vec<String>,
+    pub resolved_resources: BTreeMap<String, String>,
+    pub safety: LockedSafetyConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltControllerFirmware {
+    pub plan: ControllerBuildPlanArtifact,
+    pub image: ControllerImageManifest,
+    pub bytes: Vec<u8>,
 }
 
 impl ControllerSafetyArtifact {
@@ -87,6 +131,23 @@ impl ControllerBuildPlanArtifact {
     }
 }
 
+impl ControllerImageManifest {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        self.to_pretty_json().into_bytes()
+    }
+
+    pub fn image_hash(&self) -> String {
+        format!("sha256:{:x}", Sha256::digest(self.canonical_bytes()))
+    }
+
+    pub fn to_pretty_json(&self) -> String {
+        let mut json =
+            serde_json::to_string_pretty(self).expect("controller image manifest serializes");
+        json.push('\n');
+        json
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildError {
     InvalidLock(String),
@@ -96,6 +157,8 @@ pub enum BuildError {
     MissingBuildConfig(String),
     UnsupportedBuildPlanLockVersion(u32),
     InvalidSafetyConfig(String),
+    InvalidControllerImage(String),
+    BuildPlanMismatch(String),
 }
 
 impl fmt::Display for BuildError {
@@ -123,6 +186,12 @@ impl fmt::Display for BuildError {
             ),
             Self::InvalidSafetyConfig(message) => {
                 write!(formatter, "invalid controller safety configuration: {message}")
+            }
+            Self::InvalidControllerImage(message) => {
+                write!(formatter, "invalid controller image: {message}")
+            }
+            Self::BuildPlanMismatch(message) => {
+                write!(formatter, "controller build plan mismatch: {message}")
             }
         }
     }
@@ -177,12 +246,10 @@ pub fn compile_all(
         .collect()
 }
 
-/// Materialize one controller's locked §21.1 build plan without consulting
-/// the source manifest or package registry.
-pub fn plan_controller(
+fn controller_image_manifest(
     lock: &Lockfile,
     controller_name: &str,
-) -> Result<ControllerBuildPlanArtifact, BuildError> {
+) -> Result<ControllerImageManifest, BuildError> {
     lock.validate().map_err(BuildError::InvalidLock)?;
     if lock.lock_version < BUILD_PLAN_MINIMUM_LOCK_VERSION {
         return Err(BuildError::UnsupportedBuildPlanLockVersion(
@@ -204,8 +271,8 @@ pub fn plan_controller(
         .clone();
     sort_safety_states(&mut safety.states);
 
-    Ok(ControllerBuildPlanArtifact {
-        schema: CONTROLLER_BUILD_SCHEMA.to_string(),
+    Ok(ControllerImageManifest {
+        schema: CONTROLLER_IMAGE_SCHEMA.to_string(),
         controller: controller_name.to_string(),
         lock_hash: lock.lock_hash(),
         board: build.board.clone(),
@@ -223,6 +290,123 @@ pub fn plan_controller(
         resolved_resources: controller.resolved_resources.clone(),
         safety,
     })
+}
+
+/// Build one deterministic, inspectable controller-image container without
+/// consulting the source manifest or package registry.
+pub fn build_controller(
+    lock: &Lockfile,
+    controller_name: &str,
+) -> Result<BuiltControllerFirmware, BuildError> {
+    let image = controller_image_manifest(lock, controller_name)?;
+    let bytes = image.canonical_bytes();
+    let expected_artifact = ExpectedFirmwareArtifact {
+        format: CONTROLLER_IMAGE_SCHEMA.to_string(),
+        path: format!("build/{controller_name}/firmware.dryer.json"),
+        size_bytes: bytes.len() as u64,
+        sha256: format!("sha256:{:x}", Sha256::digest(&bytes)),
+        deployable: false,
+    };
+    let plan = ControllerBuildPlanArtifact {
+        schema: CONTROLLER_BUILD_PLAN_SCHEMA.to_string(),
+        controller: image.controller.clone(),
+        lock_hash: image.lock_hash.clone(),
+        board: image.board.clone(),
+        chip: image.chip.clone(),
+        target_triple: image.target_triple.clone(),
+        toolchain: image.toolchain.clone(),
+        build_profile: image.build_profile.clone(),
+        protocol_version: image.protocol_version.clone(),
+        abi_version: image.abi_version.clone(),
+        flash_bytes: image.flash_bytes,
+        ram_bytes: image.ram_bytes,
+        bootloader_offset_bytes: image.bootloader_offset_bytes,
+        features: image.features.clone(),
+        native_drivers: image.native_drivers.clone(),
+        resolved_resources: image.resolved_resources.clone(),
+        safety: image.safety.clone(),
+        expected_artifact,
+    };
+    Ok(BuiltControllerFirmware { plan, image, bytes })
+}
+
+/// Build every locked controller in stable controller-id order.
+pub fn build_all(lock: &Lockfile) -> Result<BTreeMap<String, BuiltControllerFirmware>, BuildError> {
+    lock.controllers
+        .keys()
+        .map(|controller| {
+            build_controller(lock, controller).map(|built| (controller.clone(), built))
+        })
+        .collect()
+}
+
+/// Materialize one controller's locked §21.1 build plan, including the exact
+/// expected reference-backend output, without rereading source packages.
+pub fn plan_controller(
+    lock: &Lockfile,
+    controller_name: &str,
+) -> Result<ControllerBuildPlanArtifact, BuildError> {
+    build_controller(lock, controller_name).map(|built| built.plan)
+}
+
+/// Parse a controller image and require its exact canonical wire encoding.
+pub fn inspect_controller_image(bytes: &[u8]) -> Result<ControllerImageManifest, BuildError> {
+    let image: ControllerImageManifest = serde_json::from_slice(bytes)
+        .map_err(|error| BuildError::InvalidControllerImage(error.to_string()))?;
+    if image.schema != CONTROLLER_IMAGE_SCHEMA {
+        return Err(BuildError::InvalidControllerImage(format!(
+            "schema '{}' is not '{}'",
+            image.schema, CONTROLLER_IMAGE_SCHEMA
+        )));
+    }
+    if image.canonical_bytes() != bytes {
+        return Err(BuildError::InvalidControllerImage(
+            "bytes are not the canonical JSON encoding".into(),
+        ));
+    }
+    Ok(image)
+}
+
+/// Require a persisted build plan to be exactly reproducible from the lock.
+pub fn verify_build_plan(
+    lock: &Lockfile,
+    controller_name: &str,
+    plan: &ControllerBuildPlanArtifact,
+) -> Result<(), BuildError> {
+    let expected = plan_controller(lock, controller_name)?;
+    if plan != &expected {
+        return Err(BuildError::BuildPlanMismatch(format!(
+            "controller '{controller_name}' plan does not match the locked inputs"
+        )));
+    }
+    Ok(())
+}
+
+/// Verify an externally supplied plan and image against one locked controller.
+pub fn verify_controller_image(
+    lock: &Lockfile,
+    controller_name: &str,
+    plan: &ControllerBuildPlanArtifact,
+    bytes: &[u8],
+) -> Result<ControllerImageManifest, BuildError> {
+    verify_build_plan(lock, controller_name, plan)?;
+    let expected = build_controller(lock, controller_name)?;
+    let image = inspect_controller_image(bytes)?;
+    if bytes != expected.bytes {
+        return Err(BuildError::InvalidControllerImage(format!(
+            "controller '{controller_name}' expected {} bytes at {}, observed {} bytes at sha256:{:x}",
+            expected.plan.expected_artifact.size_bytes,
+            expected.plan.expected_artifact.sha256,
+            bytes.len(),
+            Sha256::digest(bytes)
+        )));
+    }
+    if image != expected.image {
+        return Err(BuildError::InvalidControllerImage(format!(
+            "controller '{controller_name}' manifest does not match the locked inputs"
+        )));
+    }
+    Ok(image)
 }
 
 /// Materialize all build plans in stable controller-id order.
@@ -288,6 +472,9 @@ mod tests {
 
         let plans = plan_all(&lock).unwrap();
         assert_eq!(plans.keys().collect::<Vec<_>>(), vec!["mainboard"]);
+
+        let images = build_all(&lock).unwrap();
+        assert_eq!(images.keys().collect::<Vec<_>>(), vec!["mainboard"]);
     }
 
     #[test]
@@ -301,11 +488,19 @@ mod tests {
         let round_trip: ControllerBuildPlanArtifact =
             serde_json::from_slice(&first.canonical_bytes()).unwrap();
         assert_eq!(round_trip, first);
-        assert_eq!(first.schema, CONTROLLER_BUILD_SCHEMA);
+        assert_eq!(first.schema, CONTROLLER_BUILD_PLAN_SCHEMA);
         assert_eq!(first.target_triple, "thumbv7em-none-eabihf");
         assert_eq!(first.flash_bytes, 524_288);
         assert_eq!(first.safety.states.len(), 2);
         assert_eq!(first.native_drivers, ["devices/tmc2209@2.1.0"]);
+        assert_eq!(first.expected_artifact.format, CONTROLLER_IMAGE_SCHEMA);
+        assert_eq!(
+            first.expected_artifact.path,
+            "build/mainboard/firmware.dryer.json"
+        );
+        assert!(first.expected_artifact.size_bytes > 0);
+        assert!(first.expected_artifact.sha256.starts_with("sha256:"));
+        assert!(!first.expected_artifact.deployable);
 
         let mut reordered = lock;
         reordered
@@ -322,6 +517,40 @@ mod tests {
             (&states[0].component, &states[0].resource)
                 < (&states[1].component, &states[1].resource)
         }));
+    }
+
+    #[test]
+    fn reference_backend_is_deterministic_inspectable_and_lock_bound() {
+        let lock = fixture_lock();
+        let first = build_controller(&lock, "mainboard").unwrap();
+        let second = build_controller(&lock, "mainboard").unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.image.schema, CONTROLLER_IMAGE_SCHEMA);
+        assert_eq!(
+            first.bytes.len() as u64,
+            first.plan.expected_artifact.size_bytes
+        );
+        assert_eq!(
+            first.image.image_hash(),
+            first.plan.expected_artifact.sha256
+        );
+        assert_eq!(inspect_controller_image(&first.bytes).unwrap(), first.image);
+        assert_eq!(
+            verify_controller_image(&lock, "mainboard", &first.plan, &first.bytes).unwrap(),
+            first.image
+        );
+
+        let mut noncanonical = first.bytes.clone();
+        noncanonical.push(b'\n');
+        let error = inspect_controller_image(&noncanonical).unwrap_err();
+        assert!(error.to_string().contains("canonical JSON"), "{error}");
+
+        let mut drifted_plan = first.plan.clone();
+        drifted_plan.expected_artifact.sha256 =
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000".into();
+        let error =
+            verify_controller_image(&lock, "mainboard", &drifted_plan, &first.bytes).unwrap_err();
+        assert!(matches!(error, BuildError::BuildPlanMismatch(_)));
     }
 
     #[test]

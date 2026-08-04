@@ -19,8 +19,8 @@ expansion from machine templates,
 explicit + search-based connector allocation, electrical and safety-coverage
 validation, controller-local safety partitioning, target-aware artifact planning,
 explainable assignments), hashed `machine.lock` generation, deterministic controller
-safety/build-plan artifacts, a controller simulator, and cross-platform USB discovery
-with non-mutating flash-plan generation.
+safety/build-plan artifacts with an inspectable hashed reference image, a controller
+simulator, and cross-platform USB discovery with non-mutating flash-plan generation.
 There is no firmware runtime, motion stack, control protocol, or mutating flasher yet;
 see `docs/implementation-roadmap.md` for exactly what exists versus what is
 planned — a checked box there means tests pass, not that a type was declared.
@@ -45,7 +45,7 @@ The authoritative specification lives in `docs/spec.md` (Draft v0.1). Key princi
 | `crates/package-model` | Package identity (`namespace/name@version`), manifests, board payloads, dependency ranges, local directory registry, portable registry provenance |
 | `crates/machine-resolver` | Deterministic resolution: explicit phases through firmware partitioning, connector allocation, electrical/timing/safety checks, explainable assignments |
 | `crates/machine-lock` | `machine.lock` v5: canonical, hashed resolution plus registry provenance, controller-local safety, and build inputs |
-| `crates/firmware-build` | Byte-stable, hashed per-controller safety artifacts and deterministic build plans compiled from `machine.lock` |
+| `crates/firmware-build` | Byte-stable safety artifacts, output-pinned build plans, and inspectable non-executable controller images compiled from `machine.lock` |
 | `crates/simulator` | Deterministic simulated controller: virtual clock, faulty transport, scheduled queue windows, edge-enforced safety, and structured trace replay |
 | `crates/firmware-flash` | Native USB discovery on Linux/macOS/Windows, strict device matching, artifact verification, and deterministic dry-run flash plans |
 
