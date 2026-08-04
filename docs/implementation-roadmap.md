@@ -51,8 +51,8 @@ tests exist and pass, not that a type was declared.
   search allocation + kinematics-limit defaults); expansion never mutates the
   source — source shadows template (I1132), every contribution is surfaced
   (I1133), a kinematics-type mismatch warns (E1130), and template-injected claim
-  errors are hard (E1131/E1134/E1206). *Remaining for [x]:* bus/signal requirement
-  matching, range spans + `related` diagnostics.
+  errors are hard (E1131/E1134/E1206). *Remaining for [x]:* range spans +
+  `related` diagnostics.
 - [~] **6. Electrical, timing, and safety validation** — first electrical check landed
   as resolver phase 8: a component's declared `current` draw is quantity-parsed and
   compared against the assigned connector's `max_current` (E1300; malformed draw
@@ -101,7 +101,20 @@ tests exist and pass, not that a type was declared.
   determinism pinned (identical seeds ⇒ identical traces under jitter+loss+dup).
   *Remaining for [x]:* multi-controller clock skew (deferred per design Q3),
   queue timestamp windows, and replay tooling beyond first-divergence.
-- [ ] **10. Cross-platform flash discovery and dry-run plans**
+- [x] **10. Cross-platform flash discovery and dry-run plans** —
+  `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
+  Windows backends, normalizes their portable identity, and deterministically applies
+  the locked board package's VID/PID plus optional exact string constraints. Missing
+  and multi-match results are blocking states; selection never falls back to a partial
+  match. Board packages now carry validated flash recipes (method, bootloader-mode
+  selector, transition instructions, sha256 verification, recovery). The planner
+  verifies registry manifest drift and artifact bytes, then emits versioned,
+  byte-stable JSON containing expected current firmware, exact board identity,
+  signature slot, planned steps, and recovery. The public API and example CLI are
+  deliberately read-only: no method can open or flash a device. The fixture plan is
+  drift-gated at `examples/minimal-cartesian/flash-plan.golden.json`; see
+  [`firmware-flash.md`](firmware-flash.md). A mutating, method-specific executor is a
+  later firmware/deployment slice and must consume these checks unchanged.
 
 ## Diagnostic code conventions (Phase 0 deliverable)
 
@@ -126,5 +139,7 @@ tests exist and pass, not that a type was declared.
 - **Timing/bus-signal data model**: [`peripheral-mapping.md`](peripheral-mapping.md)
   is fully implemented (pin tables, wiring check, capabilities, step timing, bus matching).
 - **Simulated controller** (§29 step 9): implemented — see the step-9 entry above.
+- **Flash discovery and planning** (§29 step 10): implemented as a read-only boundary;
+  no mutating flash executor exists yet.
 - Package schemas for chip/board/device/workflow kinds (§7–§9) land with the
   resolver slices that consume them; only `machine.schema.json` is normative today.

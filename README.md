@@ -16,8 +16,9 @@ the Machine Graph v0.1 schema and parser (exact source locations), the package m
 with a multi-version local registry, the resource model, a nine-phase deterministic
 resolver (transitive dependency closure, graph expansion from machine templates,
 explicit + search-based connector allocation, electrical and safety-coverage
-validation, explainable assignments), and hashed `machine.lock` generation with a
-drift-gated golden. There is no firmware, no motion stack, and no control protocol
+validation, explainable assignments), hashed `machine.lock` generation, a deterministic
+controller simulator, and cross-platform USB discovery with non-mutating flash-plan
+generation. There is no firmware, motion stack, control protocol, or mutating flasher
 yet; see `docs/implementation-roadmap.md` for exactly what exists versus what is
 planned — a checked box there means tests pass, not that a type was declared.
 
@@ -42,6 +43,7 @@ The authoritative specification lives in `docs/spec.md` (Draft v0.1). Key princi
 | `crates/machine-resolver` | Deterministic resolution: 9 explicit phases, explicit-claim + search-based connector allocation, electrical + safety-coverage checks, explainable assignments, conflict diagnostics with suggestions |
 | `crates/machine-lock` | `machine.lock`: canonical, hashed capture of a resolution (drift-gated golden in `examples/`) |
 | `crates/simulator` | Deterministic simulated controller: virtual clock, faulty transport, edge-enforced safety envelope, byte-stable trace goldens |
+| `crates/firmware-flash` | Native USB discovery on Linux/macOS/Windows, strict device matching, artifact verification, and deterministic dry-run flash plans |
 
 ```bash
 cargo test --workspace

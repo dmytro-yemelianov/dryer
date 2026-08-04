@@ -3,7 +3,7 @@ machine_hash: sha256:24309adb115a1ca858d6530b09b24bad0077eecbcec840fb8683d8d5a43
 resolver_version: 0.1.0
 packages:
 - id: boards/example-mainboard@1.0.0
-  manifest_hash: sha256:24a20112f9c19ac89df98b8d696a7d2248e13c423a82e3f77a137d1f2c74e862
+  manifest_hash: sha256:ae764f00fa42948859de165899573df981e96101ce04a039097d8d6c2b62a5f5
 - id: chips/generic-mcu@1.4.0
   manifest_hash: sha256:b62be2136024623b3918cf845bdb67067bcd3db126a826bdaba83f4201a9ab51
 - id: devices/tmc2209@2.1.0

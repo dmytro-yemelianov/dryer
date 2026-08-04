@@ -80,3 +80,20 @@ connectors:
 transports:
   usb:
     peripheral: usb_fs
+
+# Synthetic bootloader identity used by the flash-planner fixture. A real
+# board package must publish the VID/PID it exposes while in flashing mode.
+flash:
+  default_method: dfu
+  methods:
+    dfu:
+      transport: usb
+      select:
+        usb_vid: "0x1209"
+        usb_pid: "0xd003"
+      enter_bootloader:
+        - Hold BOOT while tapping RESET, then release BOOT.
+      verify: sha256
+      recovery:
+        - Re-enter DFU mode and retry with the same locked artifact.
+        - If DFU is unavailable, use the board's hardware recovery probe.

@@ -1,4 +1,4 @@
-# Architecture — Phase 0 view
+# Architecture — current implementation view
 
 The full architecture is defined by the Dryer spec (Draft v0.1). This page maps
 the spec's layers to what exists in the workspace today.
@@ -12,38 +12,54 @@ Workflow runtime             — none
 Machine state service        — none
 Motion planner               — none
 Control protocol             — none
-MCU runtime                  — none
+MCU runtime                  — simulator (behavioral test model, no firmware)
 Hardware                     — none
 ─────────────────────────────────────────────
-Configuration language       — machine-schema, machine-parser   ← Phase 0 lives here
-Package ecosystem            — package-model                     ←
-Resolver vocabulary          — resource-model                    ←
+Deployment planning          — firmware-flash (read-only plans; no executor)
+Reproducibility              — machine-lock
+Machine resolution           — machine-resolver
+Configuration language       — machine-schema, machine-parser
+Package ecosystem            — package-model
+Resolver vocabulary          — resource-model
 ```
 
-Phase 0 builds the configuration and package layer *only*: everything above the
-line arrives in later phases, and nothing in this workspace may pre-commit their
-interfaces.
+The workspace has crossed the original Phase 0-only boundary, but only through
+testable planning seams: the simulator models controller behavior and
+`firmware-flash` describes what a flash would do. Neither is a production runtime or
+mutating deployment implementation.
 
 ## Crate dependency rule
 
-```text
-machine-parser ──► machine-schema ◄── package-model
-                        ▲
-resource-model ─────────┘ (shares Diagnostic via machine-schema)
-```
+| Crate | Internal dependencies |
+|---|---|
+| `machine-schema` | none |
+| `package-model` | `machine-schema` |
+| `machine-parser` | `machine-schema`, `package-model` |
+| `resource-model` | none |
+| `machine-resolver` | all four crates above |
+| `machine-lock` | schema, parser, package model, resolver |
+| `firmware-flash` | `machine-lock`, `package-model` |
+| `simulator` | none in its public library; parser/resolver/package/schema in end-to-end test dependencies |
 
 - `machine-schema` is the leaf: document types, quantities, identifiers, and the
   shared `Diagnostic` type. (The spec defines `Diagnostic` under the resolver §11.3;
   it lives here so the parser and resolver share one type. The resolver will extend
   it with `SourceSpan`/`related` rather than fork it.)
-- Dependencies point downward only. The future resolver depends on all three models;
-  no model crate ever depends on the resolver.
+- Dependencies point downward only. `machine-resolver` depends on the model/parser
+  layer; no model crate depends on the resolver.
+- `machine-lock` captures successful resolution. `firmware-flash` consumes the lock
+  and board-package metadata but cannot call back into resolution or mutate hardware.
+- The simulator's public semantic types stay independent of configuration crates;
+  only its tests adapt resolved safety policy into simulated controller inputs.
 
 ## Graph lifecycle (spec §5.5)
 
-Phase 0 implements the **source graph** stage only. The `expanded`, `resolved`,
-`deployed`, and `observed` stages are distinct types owned by the resolver and
-runtime — they must never be represented by mutating `MachineDoc`.
+`machine-parser` owns the **source graph**. `machine-resolver` expands templates and
+produces a separate `ResolvedGraph`; it never mutates `MachineDoc`. `machine-lock`
+serializes a reproducibility projection of that result. A flash plan binds a locked
+controller to an observed USB candidate and artifact, but it is not yet a
+`DeployedGraph`: activation, confirmation, and persistent physical-controller identity
+do not exist. Runtime observation remains a future state-service type.
 
 ## External integration intent
 

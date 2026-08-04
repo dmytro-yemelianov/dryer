@@ -6,12 +6,12 @@
 //! that a machine's components claim.
 
 use dryer_machine_schema::{Diagnostic, Dimension, Quantity};
-use serde::Deserialize;
+use serde::{de, Deserialize, Deserializer};
 use std::collections::BTreeMap;
 
 /// Full `package.yaml` view for a `kind: board` package.
 /// Unknown fields are ignored: board packages may carry sections
-/// (flash, boot, limits) that later resolver phases will consume.
+/// (boot, limits) that later resolver phases will consume.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BoardPackageFile {
     pub package: crate::PackageIdentity,
@@ -25,6 +25,11 @@ pub struct BoardPackageFile {
     pub connectors: BTreeMap<String, Connector>,
     #[serde(default)]
     pub transports: BTreeMap<String, Transport>,
+    /// Board-specific flashing recipes. These describe how to select a
+    /// bootloader device and how an operator can recover it; they never
+    /// contain a machine-specific controller identity.
+    #[serde(default)]
+    pub flash: Option<FlashConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,6 +70,74 @@ pub struct Connector {
 pub struct Transport {
     #[serde(default)]
     pub peripheral: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FlashConfig {
+    pub default_method: String,
+    #[serde(default)]
+    pub methods: BTreeMap<String, FlashMethod>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FlashMethod {
+    /// Transport used by the flashing protocol. Step 10 initially supports
+    /// `usb`; the open string keeps the package format extensible.
+    pub transport: String,
+    /// Identity of the device while it is in flashing/bootloader mode.
+    pub select: UsbSelector,
+    /// Human-executed transition instructions. The dry-run planner reports
+    /// these verbatim but never executes them.
+    #[serde(default)]
+    pub enter_bootloader: Vec<String>,
+    /// Verification vocabulary. Only `sha256` is accepted in v0.
+    pub verify: String,
+    /// Board-specific recovery instructions surfaced by every plan.
+    #[serde(default)]
+    pub recovery: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct UsbSelector {
+    #[serde(deserialize_with = "deserialize_usb_id")]
+    pub usb_vid: u16,
+    #[serde(deserialize_with = "deserialize_usb_id")]
+    pub usb_pid: u16,
+    #[serde(default)]
+    pub serial_number: Option<String>,
+    #[serde(default)]
+    pub manufacturer: Option<String>,
+    #[serde(default)]
+    pub product: Option<String>,
+}
+
+/// Accept either YAML integers or the conventional quoted `0x1234` form.
+fn deserialize_usb_id<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Repr {
+        Integer(u64),
+        String(String),
+    }
+
+    let value = match Repr::deserialize(deserializer)? {
+        Repr::Integer(value) => value,
+        Repr::String(value) => {
+            let trimmed = value.trim();
+            if let Some(hex) = trimmed
+                .strip_prefix("0x")
+                .or_else(|| trimmed.strip_prefix("0X"))
+            {
+                u64::from_str_radix(hex, 16).map_err(de::Error::custom)?
+            } else {
+                trimmed.parse::<u64>().map_err(de::Error::custom)?
+            }
+        }
+    };
+    u16::try_from(value).map_err(|_| de::Error::custom("USB id must fit in 16 bits"))
 }
 
 impl crate::LoadedPackage {
@@ -121,6 +194,9 @@ impl crate::LoadedPackage {
                 }
             }
         }
+        if let Some(flash) = &board.flash {
+            validate_flash(&self.reference.to_string(), flash, &mut diags);
+        }
         if diags.is_empty() {
             Ok(board)
         } else {
@@ -129,8 +205,89 @@ impl crate::LoadedPackage {
     }
 }
 
+fn validate_flash(reference: &str, flash: &FlashConfig, diags: &mut Vec<Diagnostic>) {
+    if !dryer_machine_schema::valid_identifier(&flash.default_method) {
+        diags.push(Diagnostic::error(
+            "E0615",
+            format!(
+                "{reference}: flash.default_method '{}' is not a valid identifier",
+                flash.default_method
+            ),
+        ));
+    }
+    if !flash.methods.contains_key(&flash.default_method) {
+        diags.push(Diagnostic::error(
+            "E0616",
+            format!(
+                "{reference}: flash.default_method '{}' has no matching method",
+                flash.default_method
+            ),
+        ));
+    }
+    for (method_id, method) in &flash.methods {
+        if !dryer_machine_schema::valid_identifier(method_id) {
+            diags.push(Diagnostic::error(
+                "E0615",
+                format!("{reference}: flash method '{method_id}' is not a valid identifier"),
+            ));
+        }
+        if method.transport != "usb" {
+            diags.push(Diagnostic::error(
+                "E0617",
+                format!(
+                    "{reference}: flash method '{method_id}' uses unsupported transport '{}' (v0 supports usb)",
+                    method.transport
+                ),
+            ));
+        }
+        if method.verify != "sha256" {
+            diags.push(Diagnostic::error(
+                "E0618",
+                format!(
+                    "{reference}: flash method '{method_id}' uses unsupported verification '{}' (v0 supports sha256)",
+                    method.verify
+                ),
+            ));
+        }
+        for (field, value) in [
+            ("serial_number", method.select.serial_number.as_deref()),
+            ("manufacturer", method.select.manufacturer.as_deref()),
+            ("product", method.select.product.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                diags.push(Diagnostic::error(
+                    "E0619",
+                    format!(
+                        "{reference}: flash method '{method_id}' select.{field} must not be empty"
+                    ),
+                ));
+            }
+        }
+        if method
+            .enter_bootloader
+            .iter()
+            .any(|step| step.trim().is_empty())
+            || method.recovery.iter().any(|step| step.trim().is_empty())
+        {
+            diags.push(Diagnostic::error(
+                "E0619",
+                format!("{reference}: flash method '{method_id}' instructions must not be empty"),
+            ));
+        }
+        if method.recovery.is_empty() {
+            diags.push(Diagnostic::error(
+                "E0619",
+                format!(
+                    "{reference}: flash method '{method_id}' must provide recovery instructions"
+                ),
+            ));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{validate_flash, BoardPackageFile};
     use std::path::Path;
 
     #[test]
@@ -147,6 +304,10 @@ mod tests {
             Some("5 A")
         );
         assert!(payload.transports.contains_key("usb"));
+        let flash = payload.flash.expect("fixture flash metadata");
+        assert_eq!(flash.default_method, "dfu");
+        assert_eq!(flash.methods["dfu"].select.usb_vid, 0x1209);
+        assert_eq!(flash.methods["dfu"].select.usb_pid, 0xd003);
     }
 
     #[test]
@@ -156,5 +317,38 @@ mod tests {
         let dev = reg.find("devices", "tmc2209").unwrap();
         let err = dev.board_payload().unwrap_err();
         assert_eq!(err[0].code, "E0610");
+    }
+
+    #[test]
+    fn invalid_flash_recipes_collect_structural_diagnostics() {
+        let board: BoardPackageFile = serde_yaml::from_str(
+            r#"
+package:
+  namespace: boards
+  name: invalid-flash
+  version: 1.0.0
+  kind: board
+flash:
+  default_method: missing
+  methods:
+    serial_method:
+      transport: serial
+      select:
+        usb_vid: 4617
+        usb_pid: 53251
+        product: ""
+      verify: crc32
+      recovery: []
+"#,
+        )
+        .unwrap();
+        let mut diagnostics = Vec::new();
+        validate_flash(
+            "boards/invalid-flash@1.0.0",
+            board.flash.as_ref().unwrap(),
+            &mut diagnostics,
+        );
+        let codes: Vec<_> = diagnostics.iter().map(|diag| diag.code.as_str()).collect();
+        assert_eq!(codes, ["E0616", "E0617", "E0618", "E0619", "E0619"]);
     }
 }
