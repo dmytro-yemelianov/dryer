@@ -831,6 +831,12 @@ pub struct Diagnostic {
 }
 ```
 
+Source positions are 1-based and span ends are exclusive. A span may name a
+stable document identity as well as its dotted semantic path. `related` contains
+the other declarations or claims that participated in a conflict; package
+documents use portable package identities rather than checkout-specific absolute
+paths.
+
 Example:
 
 ```text
@@ -1933,4 +1939,3 @@ The durable value of ForgeOS is not simply that firmware is written in Rust. It 
 Rust provides a strong implementation foundation. The product is effectively a package manager, compiler, deployment system, and operating platform for modular machines.
 
 The immediate next step is to formalize Machine Graph v0.1, package types, resolver diagnostics, and the lockfile before implementing the native motion stack.
-

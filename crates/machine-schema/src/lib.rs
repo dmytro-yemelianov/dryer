@@ -19,11 +19,11 @@ pub const KIND_MACHINE: &str = "Machine";
 // Diagnostics
 // ---------------------------------------------------------------------------
 
-/// Structured diagnostic, shared by the parser and (later) the resolver.
+/// Structured diagnostic shared by the parser and resolver.
 ///
-/// v0.1 locates findings by a dotted document `path` plus a best-effort
-/// `line`; the spec's richer `SourceSpan`/`related` model (§11.3) arrives
-/// with the resolver, where multi-source decisions need it.
+/// `path`/`line`/`column` remain as the v0.1 compatibility projection while
+/// `source` carries the exact range and `related` names every other source
+/// location that contributed to a multi-source decision (spec §11.3).
 ///
 /// Code conventions (docs/implementation-roadmap.md):
 /// `E01xx` parse · `E02xx` structure/required fields · `E03xx` identifiers ·
@@ -40,8 +40,96 @@ pub struct Diagnostic {
     /// 1-based column of the located key/item, when span tracking found it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceSpan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related: Vec<RelatedDiagnostic>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggestions: Vec<String>,
+}
+
+/// One 1-based position in a source document.
+///
+/// `SourceSpan::end` is exclusive, matching Rust ranges and editor protocols.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourcePosition {
+    pub line: usize,
+    pub column: usize,
+}
+
+impl SourcePosition {
+    pub const fn new(line: usize, column: usize) -> Self {
+        Self { line, column }
+    }
+}
+
+/// Exact range for a YAML key or sequence item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceSpan {
+    /// Stable source identity. File parsing uses the supplied path; package
+    /// diagnostics use `package:<ref>/package.yaml` so output is portable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<String>,
+    /// Dotted semantic path of the token actually located. This can be the
+    /// nearest recorded ancestor when the requested field is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub start: SourcePosition,
+    pub end: SourcePosition,
+}
+
+impl SourceSpan {
+    pub fn new(path: impl Into<String>, start: SourcePosition, end: SourcePosition) -> Self {
+        Self {
+            document: None,
+            path: Some(path.into()),
+            start,
+            end,
+        }
+    }
+
+    pub const fn point(line: usize, column: usize) -> Self {
+        let position = SourcePosition::new(line, column);
+        Self {
+            document: None,
+            path: None,
+            start: position,
+            end: position,
+        }
+    }
+
+    pub fn in_document(mut self, document: impl Into<String>) -> Self {
+        self.document = Some(document.into());
+        self
+    }
+}
+
+/// A second source location that explains or participates in a diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelatedDiagnostic {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceSpan>,
+}
+
+impl RelatedDiagnostic {
+    pub fn at(message: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            path: Some(path.into()),
+            source: None,
+        }
+    }
+
+    pub fn with_source(message: impl Into<String>, source: SourceSpan) -> Self {
+        Self {
+            message: message.into(),
+            path: source.path.clone(),
+            source: Some(source),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +149,8 @@ impl Diagnostic {
             path: None,
             line: None,
             column: None,
+            source: None,
+            related: Vec::new(),
             suggestions: Vec::new(),
         }
     }
@@ -86,6 +176,27 @@ impl Diagnostic {
 
     pub fn suggest(mut self, s: impl Into<String>) -> Self {
         self.suggestions.push(s.into());
+        self
+    }
+
+    pub fn with_source(mut self, source: SourceSpan) -> Self {
+        if self.path.is_none() {
+            self.path.clone_from(&source.path);
+        }
+        self.line = Some(source.start.line);
+        self.column = Some(source.start.column);
+        self.source = Some(source);
+        self
+    }
+
+    pub fn related_at(mut self, message: impl Into<String>, path: impl Into<String>) -> Self {
+        self.related.push(RelatedDiagnostic::at(message, path));
+        self
+    }
+
+    pub fn related_source(mut self, message: impl Into<String>, source: SourceSpan) -> Self {
+        self.related
+            .push(RelatedDiagnostic::with_source(message, source));
         self
     }
 }
@@ -364,6 +475,41 @@ pub struct Calibration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rich_diagnostics_round_trip_without_losing_related_ranges() {
+        let primary = SourceSpan::new(
+            "components.y_driver.connected_to",
+            SourcePosition::new(8, 5),
+            SourcePosition::new(8, 17),
+        )
+        .in_document("machine.yaml");
+        let first_claim = SourceSpan::new(
+            "components.x_driver.connected_to",
+            SourcePosition::new(4, 5),
+            SourcePosition::new(4, 17),
+        )
+        .in_document("machine.yaml");
+        let diagnostic = Diagnostic::error("E1200", "connector conflict")
+            .with_source(primary)
+            .related_source("first claimed here", first_claim)
+            .suggest("move y_driver");
+
+        let json = serde_json::to_string(&diagnostic).unwrap();
+        let decoded: Diagnostic = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, diagnostic);
+        assert_eq!(decoded.line, Some(8));
+        assert_eq!(decoded.column, Some(5));
+    }
+
+    #[test]
+    fn legacy_diagnostics_deserialize_with_empty_rich_locations() {
+        let json =
+            r#"{"code":"E0001","severity":"error","message":"old","path":"x","line":2,"column":3}"#;
+        let decoded: Diagnostic = serde_json::from_str(json).unwrap();
+        assert!(decoded.source.is_none());
+        assert!(decoded.related.is_empty());
+    }
 
     #[test]
     fn identifiers_follow_the_spec_rules() {

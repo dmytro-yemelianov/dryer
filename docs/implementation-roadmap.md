@@ -17,15 +17,14 @@ tests exist and pass, not that a type was declared.
 - [x] **3. `resource-model` with stable identifiers and units** — resource kinds
   (§10), hard-constraint classes (§10.1), preferences, offers with locally-decidable
   constraint evaluation; serde round-trips for future lockfile embedding.
-- [x] **4. `machine-parser` with source locations** — collect-all-diagnostics
+- [x] **4. `machine-parser` with source spans** — collect-all-diagnostics
   validation (version/kind, identifiers, package refs, quantity dimensions,
-  intra-document references, transport parents) with dotted paths and **exact
-  line:column locations** from a marked YAML event walk (`spans::SpanIndex`,
+  intra-document references, transport parents) with dotted paths and **exact,
+  exclusive source ranges** from a marked YAML event walk (`spans::SpanIndex`,
   yaml-rust2): every key and sequence item is indexed; unrecorded paths locate at
-  their nearest ancestor. The original key-scan heuristic is deleted. Still future:
-  §11.3 range spans + `related` diagnostics, which belong to the resolver's
-  multi-source conflicts.
-- [~] **5. `machine-resolver` phases 1–7 and structured diagnostics** — the seven-phase
+  their nearest ancestor. The original `path`/`line`/`column` fields remain as a
+  compatibility projection, and the reusable index flows into resolver diagnostics.
+- [x] **5. `machine-resolver` phases 1–7 and structured diagnostics** — the seven-phase
   skeleton runs end-to-end with a recorded `phases_run` trace: parse/schema delegate to
   the parser; phase 3 checks pinned packages against the registry (exact-version match,
   flat-pin dependency-range checks — no transitive solving yet); phase 4 loads board
@@ -51,8 +50,12 @@ tests exist and pass, not that a type was declared.
   search allocation + kinematics-limit defaults); expansion never mutates the
   source — source shadows template (I1132), every contribution is surfaced
   (I1133), a kinematics-type mismatch warns (E1130), and template-injected claim
-  errors are hard (E1131/E1134/E1206). *Remaining for [x]:* range spans +
-  `related` diagnostics.
+  errors are hard (E1131/E1134/E1206). Slice 10 completed §11.3 diagnostics:
+  resolver errors inherit exact machine-source ranges; E1103/E1104 retain portable
+  package-manifest ranges for every dependency constraint; E1200/E1314 link the
+  current connector/timer claim to the original reservation through `related`.
+  Rich diagnostic JSON remains deterministic and older diagnostic JSON still
+  deserializes with empty range/related fields.
 - [~] **6. Electrical, timing, and safety validation** — first electrical check landed
   as resolver phase 8: a component's declared `current` draw is quantity-parsed and
   compared against the assigned connector's `max_current` (E1300; malformed draw

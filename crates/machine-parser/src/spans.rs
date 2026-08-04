@@ -1,19 +1,21 @@
-//! Exact source locations for dotted document paths (spec §11.3).
+//! Exact source ranges for dotted document paths (spec §11.3).
 //!
 //! A marked event walk over the YAML source builds an index from every
 //! key/item path (`kinematics.limits.max_velocity`, `packages[0]`) to the
-//! 1-based line and 0-based column where it appears. Diagnostics consult
+//! 1-based start/end positions where it appears. Diagnostics consult
 //! this index instead of guessing; a path with no entry falls back to its
 //! nearest recorded ancestor.
 
+use dryer_machine_schema::{SourcePosition, SourceSpan};
 use std::collections::BTreeMap;
 use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser};
 use yaml_rust2::scanner::Marker;
 
-/// Path → (line 1-based, column 0-based) of the key or sequence item.
-#[derive(Debug, Default)]
+/// Path → exact range of the key or sequence item.
+#[derive(Debug, Clone, Default)]
 pub struct SpanIndex {
-    map: BTreeMap<String, (usize, usize)>,
+    map: BTreeMap<String, SourceSpan>,
+    document: Option<String>,
 }
 
 impl SpanIndex {
@@ -21,23 +23,49 @@ impl SpanIndex {
     /// (diagnostics then carry paths without lines) — parse errors proper
     /// are reported by the typed deserialization pass, not here.
     pub fn build(source: &str) -> SpanIndex {
-        let mut rx = Receiver::default();
-        let mut parser = Parser::new_from_str(source);
-        let _ = parser.load(&mut rx, false);
-        SpanIndex { map: rx.map }
+        Self::build_with_document(source, None)
     }
 
+    /// Build an index whose returned spans identify `document`.
+    pub fn build_named(source: &str, document: impl Into<String>) -> SpanIndex {
+        Self::build_with_document(source, Some(document.into()))
+    }
+
+    fn build_with_document(source: &str, document: Option<String>) -> SpanIndex {
+        let mut rx = Receiver::new(source);
+        let mut parser = Parser::new_from_str(source);
+        let _ = parser.load(&mut rx, false);
+        SpanIndex {
+            map: rx.map,
+            document,
+        }
+    }
+
+    /// Compatibility point lookup: line is 1-based and column is 0-based.
     pub fn get(&self, path: &str) -> Option<(usize, usize)> {
-        self.map.get(path).copied()
+        self.get_span(path)
+            .map(|span| (span.start.line, span.start.column - 1))
+    }
+
+    pub fn get_span(&self, path: &str) -> Option<SourceSpan> {
+        let mut span = self.map.get(path)?.clone();
+        span.document.clone_from(&self.document);
+        Some(span)
     }
 
     /// Locate a path, retreating to the nearest recorded ancestor
     /// (`components.x.ghost` → `components.x`) when the exact path has
     /// no entry.
     pub fn locate(&self, path: &str) -> Option<(usize, usize)> {
+        self.locate_span(path)
+            .map(|span| (span.start.line, span.start.column - 1))
+    }
+
+    /// Locate an exact range, retreating to the nearest recorded ancestor.
+    pub fn locate_span(&self, path: &str) -> Option<SourceSpan> {
         let mut p = path.to_string();
         loop {
-            if let Some(hit) = self.get(&p) {
+            if let Some(hit) = self.get_span(&p) {
                 return Some(hit);
             }
             match p.rfind(['.', '[']) {
@@ -55,7 +83,8 @@ enum Frame {
 
 #[derive(Default)]
 struct Receiver {
-    map: BTreeMap<String, (usize, usize)>,
+    map: BTreeMap<String, SourceSpan>,
+    source_lines: Vec<String>,
     /// Path segments of enclosing containers. Sequence-item segments are
     /// bracketed (`[0]`) and join without a dot.
     path: Vec<String>,
@@ -80,6 +109,35 @@ fn join(path: &[String]) -> String {
 }
 
 impl Receiver {
+    fn new(source: &str) -> Self {
+        Self {
+            source_lines: source.lines().map(str::to_owned).collect(),
+            ..Self::default()
+        }
+    }
+
+    fn scalar_span(&self, path: String, value: &str, mark: Marker) -> SourceSpan {
+        let start_column = mark.col() + 1;
+        let width = self.scalar_width(value, mark).max(1);
+        SourceSpan::new(
+            path,
+            SourcePosition::new(mark.line(), start_column),
+            SourcePosition::new(mark.line(), start_column + width),
+        )
+    }
+
+    fn scalar_width(&self, value: &str, mark: Marker) -> usize {
+        let Some(line) = self.source_lines.get(mark.line().saturating_sub(1)) else {
+            return value.chars().count();
+        };
+        let tail: Vec<char> = line.chars().skip(mark.col()).collect();
+        match tail.first().copied() {
+            Some('\'') => quoted_width(&tail, '\''),
+            Some('"') => quoted_width(&tail, '"'),
+            _ => value.chars().count(),
+        }
+    }
+
     fn enter_container(&mut self) {
         let seg = if let Some(key) = self.pending.take() {
             Some(key)
@@ -152,10 +210,12 @@ impl MarkedEventReceiver for Receiver {
                     None => {}
                 }
                 if let Some(p) = key_entry {
-                    self.map.insert(p, (mark.line(), mark.col()));
+                    let span = self.scalar_span(p.clone(), &value, mark);
+                    self.map.insert(p, span);
                     self.pending = Some(value);
                 } else if let Some(p) = item_entry {
-                    self.map.insert(p, (mark.line(), mark.col()));
+                    let span = self.scalar_span(p.clone(), &value, mark);
+                    self.map.insert(p, span);
                 } else {
                     self.on_value_scalar();
                 }
@@ -164,6 +224,31 @@ impl MarkedEventReceiver for Receiver {
             _ => {}
         }
     }
+}
+
+fn quoted_width(tail: &[char], quote: char) -> usize {
+    let mut escaped = false;
+    let mut i = 1;
+    while i < tail.len() {
+        let c = tail[i];
+        if quote == '"' {
+            if c == quote && !escaped {
+                return i + 1;
+            }
+            escaped = c == '\\' && !escaped;
+            if c != '\\' {
+                escaped = false;
+            }
+        } else if c == quote {
+            if tail.get(i + 1) == Some(&quote) {
+                i += 1;
+            } else {
+                return i + 1;
+            }
+        }
+        i += 1;
+    }
+    tail.len()
 }
 
 #[cfg(test)]
@@ -193,6 +278,17 @@ list:
         assert_eq!(idx.get("nest.b[1]"), Some((6, 6)));
         assert_eq!(idx.get("nest.b[2].key"), Some((7, 6)));
         assert_eq!(idx.get("list[1]"), Some((10, 4)));
+        let span = idx.get_span("nest.a").unwrap();
+        assert_eq!(span.start, SourcePosition::new(3, 3));
+        assert_eq!(span.end, SourcePosition::new(3, 4));
+    }
+
+    #[test]
+    fn quoted_scalars_include_their_delimiters_in_the_range() {
+        let idx = SpanIndex::build("items:\n  - \"two words\"\n");
+        let span = idx.get_span("items[0]").unwrap();
+        assert_eq!(span.start, SourcePosition::new(2, 5));
+        assert_eq!(span.end, SourcePosition::new(2, 16));
     }
 
     #[test]
