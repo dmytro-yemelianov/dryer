@@ -60,7 +60,7 @@ tests exist and pass, not that a type was declared.
   or both claims came from a package template.
   Rich diagnostic JSON remains deterministic and older diagnostic JSON still
   deserializes with empty range/related fields.
-- [~] **6. Electrical, timing, and safety validation** — first electrical check landed
+- [x] **6. Electrical, timing, and safety validation** — first electrical check landed
   as resolver phase 8: a component's declared `current` draw is quantity-parsed and
   compared against the assigned connector's `max_current` (E1300; malformed draw
   E1301). Slice 3 added **safety validation** (resolver phase 10 analogue): safety
@@ -87,8 +87,20 @@ tests exist and pass, not that a type was declared.
   requirements name required DMA signals and maximum measured timing bounds; chip
   targets publish explicit routes and worst-case values; missing/excess capability
   is blocking and accepted evidence is recorded in assignment provenance. DMA
-  ownership remains deferred to firmware allocation. *Remaining:* compiling safe
-  states into controller artifacts (firmware phases).
+  ownership remains deferred to firmware allocation. Slice 13 completed **safe-state
+  firmware partitioning** (§11.2 phase 11, §18.2): the safety action vocabulary is
+  closed (`off`, `disabled`), heartbeat timeouts compile to positive 1 us ticks,
+  logical actuators inherit only validated driver-socket resources and require class
+  coverage just like direct outputs (E1501/E1506), and required sensors must resolve
+  through an input connector on the same controller (E1503/E1504/E1507); a covered
+  actuator without a concrete local resource is blocking (E1505), and multiple
+  actions for one physical resource are rejected (E1508). The resolver emits
+  controller-local bindings;
+  lockfile v3 pins them; `dryer-firmware-build` emits the byte-stable, hashed
+  `dryer.controller-safety/v1` artifact. The simulator consumes that artifact rather
+  than rereading package policy. Golden:
+  `examples/minimal-cartesian/controller-safety.golden.json`; see
+  [`firmware-build.md`](firmware-build.md).
 - [~] **7. `machine-lock` canonical serialization and hashing** — `dryer-machine-lock`
   produces a deterministic lockfile (canonical JSON bytes + `sha256:` lock hash; YAML
   on disk) binding the machine-source hash, exact package versions, resolver version,
@@ -98,7 +110,9 @@ tests exist and pass, not that a type was declared.
   and §6.6 **full package content digests**: a domain-separated, length-framed sha256
   over sorted portable paths and every regular-file byte; symlinks and non-UTF-8 paths
   are rejected, v1 locks remain readable, and flash planning blocks companion-file
-  drift as well as manifest drift. *Remaining for [x]:* registry source identity,
+  drift as well as manifest drift. Slice 13 introduced lockfile v3, requiring a
+  versioned compiled safety partition for every controller while v1/v2 remain
+  readable. *Remaining for [x]:* registry source identity,
   firmware targets, protocol versions, and feature flags — each gated on machinery
   that does not exist yet (stated in the crate docs).
 - [ ] **8. Klipper config and build-parameter export** *(license/provenance record
@@ -108,7 +122,7 @@ tests exist and pass, not that a type was declared.
   (wire framing deliberately later), transport with seeded jitter/loss/duplication
   and link faults, bounded queue, first-order thermal plant + endstop homing with
   exact clamped motion, and the §18.1 edge-enforced safety envelope — heartbeat
-  loss forces the RESOLVED profile's safe state within its typed timeout, resets
+  loss forces the COMPILED controller artifact's safe state within its integer timeout, resets
   latch faults and reject further commands. Byte-stable integer-only traces;
   the fixture job golden (`examples/minimal-cartesian/job-trace.golden`) is
   drift-gated by test with an UPDATE_TRACE regeneration path; seeded-fault

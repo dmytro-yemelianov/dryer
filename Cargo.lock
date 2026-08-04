@@ -81,6 +81,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dryer-firmware-build"
+version = "0.1.0"
+dependencies = [
+ "dryer-machine-lock",
+ "dryer-machine-resolver",
+ "dryer-package-model",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "dryer-firmware-flash"
 version = "0.1.0"
 dependencies = [
@@ -163,6 +175,8 @@ dependencies = [
 name = "dryer-simulator"
 version = "0.1.0"
 dependencies = [
+ "dryer-firmware-build",
+ "dryer-machine-lock",
  "dryer-machine-parser",
  "dryer-machine-resolver",
  "dryer-machine-schema",

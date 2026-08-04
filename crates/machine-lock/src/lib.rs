@@ -1,12 +1,13 @@
 //! `machine.lock` (spec §12, §29 step 7): a generated, canonical, hashed
 //! capture of one successful resolution.
 //!
-//! v0.2 field scope, stated honestly: exact package versions + portable
+//! v0.3 field scope, stated honestly: exact package versions + portable
 //! full-content digests (§6.6), manifest hashes, the machine-source hash,
 //! resolver identity, the pinned safety profile, and per-controller resolved
-//! resources. Deferred to later slices (each needs machinery that does not
-//! exist yet): registry source identity, firmware target triples and build
-//! profiles, protocol versions, and feature flags.
+//! resources plus compiled controller safety configuration. Deferred to later
+//! slices (each needs machinery that does not exist yet): registry source
+//! identity, firmware target triples and build profiles, protocol versions,
+//! and feature flags.
 //!
 //! Canonical form: JSON with every map a `BTreeMap`, so byte-identical
 //! lockfiles for identical inputs. The on-disk file is YAML for humans;
@@ -19,7 +20,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-pub const LOCK_VERSION: u32 = 2;
+pub const LOCK_VERSION: u32 = 3;
+pub const CONTROLLER_SAFETY_SCHEMA: &str = "dryer.controller-safety/v1";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lockfile {
@@ -35,7 +37,7 @@ pub struct Lockfile {
     pub controllers: BTreeMap<String, LockedController>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockedPackage {
     /// `namespace/name@version`.
     pub id: String,
@@ -53,6 +55,29 @@ pub struct LockedController {
     pub board: String,
     /// `component/via` → connector id on this controller.
     pub resolved_resources: BTreeMap<String, String>,
+    /// Present and required in lockfile v3+; absent in legacy v1/v2 locks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety: Option<LockedSafetyConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LockedSafetyConfig {
+    pub schema: String,
+    pub states: Vec<LockedSafeState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockedSafeState {
+    pub component: String,
+    pub class: String,
+    /// Controller-local connector/resource id.
+    pub resource: String,
+    pub state: dryer_package_model::safety::SafeState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heartbeat_timeout_us: Option<u64>,
+    /// Controller-local sensor resource when required by policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sensor: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -175,6 +200,10 @@ pub fn lock(
                 LockedController {
                     board: c.board.clone(),
                     resolved_resources: BTreeMap::new(),
+                    safety: Some(LockedSafetyConfig {
+                        schema: CONTROLLER_SAFETY_SCHEMA.to_string(),
+                        states: Vec::new(),
+                    }),
                 },
             )
         })
@@ -194,6 +223,71 @@ pub fn lock(
                     .insert(format!("{component}/{via_short}"), port.to_string());
             }
         }
+    }
+    for (controller_name, bindings) in &resolved.controller_safety {
+        let Some(controller) = controllers.get_mut(controller_name) else {
+            return Err(vec![Diagnostic::error(
+                "E1403",
+                format!(
+                    "resolved safety configuration names unknown controller '{controller_name}'"
+                ),
+            )]);
+        };
+        let states = &mut controller
+            .safety
+            .as_mut()
+            .expect("v3 lock construction initializes safety")
+            .states;
+        for binding in bindings {
+            let Some((resource_controller, resource)) = binding.resource.0.split_once('.') else {
+                return Err(vec![Diagnostic::error(
+                    "E1403",
+                    format!(
+                        "safety resource '{}' is not 'controller.resource'",
+                        binding.resource.0
+                    ),
+                )]);
+            };
+            if resource_controller != controller_name {
+                return Err(vec![Diagnostic::error(
+                    "E1403",
+                    format!(
+                        "safety resource '{}' is partitioned under controller '{controller_name}'",
+                        binding.resource.0
+                    ),
+                )]);
+            }
+            let sensor = binding.sensor.as_ref().map(|sensor| {
+                sensor
+                    .0
+                    .strip_prefix(&format!("{controller_name}."))
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        vec![Diagnostic::error(
+                            "E1403",
+                            format!(
+                                "safety sensor '{}' is not local to controller '{controller_name}'",
+                                sensor.0
+                            ),
+                        )]
+                    })
+            });
+            let sensor = match sensor {
+                Some(result) => Some(result?),
+                None => None,
+            };
+            states.push(LockedSafeState {
+                component: binding.component.clone(),
+                class: binding.class.clone(),
+                resource: resource.to_string(),
+                state: binding.state,
+                heartbeat_timeout_us: binding.heartbeat_timeout_us,
+                sensor,
+            });
+        }
+        states.sort_by(|left, right| {
+            (&left.component, &left.resource).cmp(&(&right.component, &right.resource))
+        });
     }
 
     // The safety profile is part of the closure; surface it as its own
@@ -224,7 +318,8 @@ pub fn lock(
 }
 
 impl Lockfile {
-    fn validate(&self) -> Result<(), String> {
+    /// Validate version-specific invariants before downstream artifact work.
+    pub fn validate(&self) -> Result<(), String> {
         if self.lock_version >= 2 {
             for (index, package) in self.packages.iter().enumerate() {
                 if package.content_hash.is_empty() {
@@ -239,6 +334,59 @@ impl Lockfile {
                     "lockfile v{} safety_profile '{}' has no content_hash",
                     self.lock_version, self.safety_profile.id
                 ));
+            }
+        }
+        if self.lock_version >= 3 {
+            for (name, controller) in &self.controllers {
+                let safety = controller.safety.as_ref().ok_or_else(|| {
+                    format!(
+                        "lockfile v{} controller '{name}' has no compiled safety configuration",
+                        self.lock_version
+                    )
+                })?;
+                if safety.schema != CONTROLLER_SAFETY_SCHEMA {
+                    return Err(format!(
+                        "lockfile v{} controller '{name}' safety schema '{}' is not '{}'",
+                        self.lock_version, safety.schema, CONTROLLER_SAFETY_SCHEMA
+                    ));
+                }
+                let resources: std::collections::BTreeSet<&str> = controller
+                    .resolved_resources
+                    .values()
+                    .map(String::as_str)
+                    .collect();
+                let mut resources_with_safety = std::collections::BTreeSet::new();
+                for state in &safety.states {
+                    if !resources_with_safety.insert(state.resource.as_str()) {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' repeats safety state for physical resource '{}'",
+                            self.lock_version, state.resource
+                        ));
+                    }
+                    if !resources.contains(state.resource.as_str()) {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' safety resource '{}' is not resolved",
+                            self.lock_version, state.resource
+                        ));
+                    }
+                    if state
+                        .sensor
+                        .as_deref()
+                        .is_some_and(|sensor| !resources.contains(sensor))
+                    {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' safety sensor '{}' is not resolved",
+                            self.lock_version,
+                            state.sensor.as_deref().unwrap_or_default()
+                        ));
+                    }
+                    if state.heartbeat_timeout_us == Some(0) {
+                        return Err(format!(
+                            "lockfile v{} controller '{name}' safety heartbeat timeout must be positive",
+                            self.lock_version
+                        ));
+                    }
+                }
             }
         }
         Ok(())
@@ -304,6 +452,17 @@ mod tests {
         let main = &l.controllers["mainboard"];
         assert_eq!(main.resolved_resources["x_driver/connected_to"], "motor0");
         assert_eq!(main.resolved_resources["hotend_heater/output"], "heater0");
+        let safety = main.safety.as_ref().expect("v3 safety config");
+        assert_eq!(safety.schema, CONTROLLER_SAFETY_SCHEMA);
+        assert_eq!(safety.states.len(), 2, "{:?}", safety.states);
+        let heater = safety
+            .states
+            .iter()
+            .find(|state| state.component == "hotend_heater")
+            .unwrap();
+        assert_eq!(heater.resource, "heater0");
+        assert_eq!(heater.sensor.as_deref(), Some("thermistor0"));
+        assert_eq!(heater.heartbeat_timeout_us, Some(500_000));
         // the full closure: 3 explicit pins + the transitive chip
         // dependency + the implicit safety profile
         assert_eq!(l.packages.len(), 5, "{:?}", l.packages);
@@ -345,20 +504,45 @@ mod tests {
         let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
             .resolved
             .unwrap();
-        let current = lock(&source, &registry, &resolved).unwrap().to_yaml();
-        let legacy = current
-            .replace("lock_version: 2", "lock_version: 1")
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("content_hash:"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let parsed = Lockfile::from_yaml(&legacy).unwrap();
+        let mut legacy = lock(&source, &registry, &resolved).unwrap();
+        legacy.lock_version = 1;
+        for package in &mut legacy.packages {
+            package.content_hash.clear();
+        }
+        legacy.safety_profile.content_hash.clear();
+        for controller in legacy.controllers.values_mut() {
+            controller.safety = None;
+        }
+        let parsed = Lockfile::from_yaml(&legacy.to_yaml()).unwrap();
         assert_eq!(parsed.lock_version, 1);
         assert!(parsed
             .packages
             .iter()
             .all(|package| package.content_hash.is_empty()));
         assert!(parsed.safety_profile.content_hash.is_empty());
+        assert!(parsed
+            .controllers
+            .values()
+            .all(|controller| controller.safety.is_none()));
+    }
+
+    #[test]
+    fn legacy_v2_locks_without_compiled_safety_still_parse() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let mut legacy = lock(&source, &registry, &resolved).unwrap();
+        legacy.lock_version = 2;
+        for controller in legacy.controllers.values_mut() {
+            controller.safety = None;
+        }
+        let parsed = Lockfile::from_yaml(&legacy.to_yaml()).unwrap();
+        assert_eq!(parsed.lock_version, 2);
+        assert!(parsed
+            .controllers
+            .values()
+            .all(|controller| controller.safety.is_none()));
     }
 
     #[test]
@@ -389,5 +573,64 @@ mod tests {
         missing_safety_hash.safety_profile.content_hash.clear();
         let error = serde_yaml::to_string(&missing_safety_hash).unwrap_err();
         assert!(error.to_string().contains("has no content_hash"), "{error}");
+    }
+
+    #[test]
+    fn v3_locks_require_compiled_controller_safety_at_both_boundaries() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let valid = lock(&source, &registry, &resolved).unwrap();
+        let mut missing = valid.clone();
+        missing.controllers.get_mut("mainboard").unwrap().safety = None;
+        let error = serde_yaml::to_string(&missing).unwrap_err();
+        assert!(
+            error.to_string().contains("compiled safety configuration"),
+            "{error}"
+        );
+
+        let yaml = valid.to_yaml();
+        let safety_start = yaml.find("    safety:\n").unwrap();
+        let truncated = yaml[..safety_start].to_string();
+        let error = Lockfile::from_yaml(&truncated).unwrap_err();
+        assert!(
+            error.to_string().contains("compiled safety configuration"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn v3_locks_reject_multiple_actions_for_one_physical_resource() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let mut duplicate = lock(&source, &registry, &resolved).unwrap();
+        let safety = duplicate
+            .controllers
+            .get_mut("mainboard")
+            .unwrap()
+            .safety
+            .as_mut()
+            .unwrap();
+        let mut second_owner = safety
+            .states
+            .iter()
+            .find(|state| state.resource == "motor0")
+            .unwrap()
+            .clone();
+        second_owner.component = "x_driver".to_string();
+        second_owner.class = "tmc2209".to_string();
+        second_owner.state = dryer_package_model::safety::SafeState::Off;
+        safety.states.push(second_owner);
+
+        let error = serde_yaml::to_string(&duplicate).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("repeats safety state for physical resource 'motor0'"),
+            "{error}"
+        );
     }
 }

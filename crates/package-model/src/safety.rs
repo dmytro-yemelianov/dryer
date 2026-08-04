@@ -1,11 +1,10 @@
 //! Safety-profile package payload (spec §18.2): per component-class safe
 //! states and edge-enforcement parameters. This is *policy data* — the
-//! resolver checks coverage (every hazardous output belongs to a covered
-//! class); compiling safe states into controller artifacts is a firmware-
-//! phase concern (§18.2 "must not rely solely on host initialization").
+//! resolver checks coverage and partitions concrete bindings into controller
+//! safety configuration (§18.2 "must not rely solely on host initialization").
 
 use dryer_machine_schema::{Diagnostic, Dimension, Quantity};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Full `package.yaml` view for a `kind: safety-profile` package.
@@ -20,9 +19,9 @@ pub struct SafetyProfileFile {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClassPolicy {
     /// The state a controller must force on fault/boot/heartbeat loss
-    /// (`off`, `disabled`, ...). Open vocabulary until the firmware
-    /// phase defines the closed set it can actually compile.
-    pub safe_state: String,
+    /// (`off` or `disabled`). This is deliberately a closed vocabulary:
+    /// controller artifacts must never carry an uninterpreted safety action.
+    pub safe_state: SafeState,
     /// Quantity string (`500 ms`); loss of host heartbeat for longer
     /// than this forces the safe state at the edge (§18.1).
     #[serde(default)]
@@ -31,6 +30,39 @@ pub struct ClassPolicy {
     /// runaway detection needs one, §18.3).
     #[serde(default)]
     pub requires_sensor: bool,
+}
+
+/// Safety actions the current controller artifact ABI can compile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SafeState {
+    Off,
+    Disabled,
+}
+
+impl SafeState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl ClassPolicy {
+    /// Convert a validated timeout to the controller's 1 us time quantum.
+    pub fn heartbeat_timeout_us(&self) -> Option<u64> {
+        self.heartbeat_timeout.as_deref().and_then(|raw| {
+            let quantity = Quantity::parse_as(raw, Dimension::Time).ok()?;
+            let micros = quantity.value * 1_000_000.0;
+            let rounded = micros.round();
+            (quantity.value > 0.0
+                && rounded >= 1.0
+                && rounded <= u64::MAX as f64
+                && (micros - rounded).abs() <= 1e-6)
+                .then_some(rounded as u64)
+        })
+    }
 }
 
 impl crate::LoadedPackage {
@@ -60,11 +92,36 @@ impl crate::LoadedPackage {
         let mut diags = Vec::new();
         for (class, policy) in &profile.classes {
             if let Some(hb) = &policy.heartbeat_timeout {
-                if let Err(e) = Quantity::parse_as(hb, Dimension::Time) {
-                    diags.push(Diagnostic::error(
+                match Quantity::parse_as(hb, Dimension::Time) {
+                    Err(e) => diags.push(Diagnostic::error(
                         "E0633",
                         format!("{}: class '{class}' heartbeat_timeout: {e}", self.reference),
-                    ));
+                    )),
+                    Ok(quantity) if quantity.value <= 0.0 => {
+                        diags.push(Diagnostic::error(
+                            "E0634",
+                            format!(
+                                "{}: class '{class}' heartbeat_timeout must be positive",
+                                self.reference
+                            ),
+                        ));
+                    }
+                    Ok(quantity) => {
+                        let micros = quantity.value * 1_000_000.0;
+                        let rounded = micros.round();
+                        if rounded < 1.0
+                            || rounded > u64::MAX as f64
+                            || (micros - rounded).abs() > 1e-6
+                        {
+                            diags.push(Diagnostic::error(
+                                "E0635",
+                                format!(
+                                    "{}: class '{class}' heartbeat_timeout must fit the 1 us controller time quantum",
+                                    self.reference
+                                ),
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -80,6 +137,17 @@ impl crate::LoadedPackage {
 mod tests {
     use std::path::Path;
 
+    fn temporary_registry(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "dryer-safety-{label}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
     #[test]
     fn the_fixture_profile_parses_with_typed_timeouts() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
@@ -90,9 +158,85 @@ mod tests {
             .safety_profile_payload()
             .expect("payload parses");
         let heater = &profile.classes["heater"];
-        assert_eq!(heater.safe_state, "off");
+        assert_eq!(heater.safe_state, super::SafeState::Off);
         assert!(heater.requires_sensor);
         assert_eq!(heater.heartbeat_timeout.as_deref(), Some("500 ms"));
+        assert_eq!(heater.heartbeat_timeout_us(), Some(500_000));
         assert!(!profile.classes["fan"].requires_sensor);
+    }
+
+    #[test]
+    fn controller_safety_actions_are_a_closed_vocabulary() {
+        let root = temporary_registry("unsupported-state");
+        let package = root.join("safety-profiles/invalid");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("README.md"), "fixture\n").unwrap();
+        std::fs::write(package.join("LICENSE"), "fixture\n").unwrap();
+        std::fs::write(
+            package.join("package.yaml"),
+            r#"package:
+  namespace: safety-profiles
+  name: invalid
+  version: 1.0.0
+  kind: safety-profile
+classes:
+  heater:
+    safe_state: maybe
+"#,
+        )
+        .unwrap();
+        let registry = crate::LocalRegistry::load(&root);
+        let errors = registry
+            .find("safety-profiles", "invalid")
+            .unwrap()
+            .safety_profile_payload()
+            .unwrap_err();
+        assert!(errors.iter().any(|diagnostic| diagnostic.code == "E0632"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn heartbeat_timeouts_must_be_positive_controller_ticks() {
+        let root = temporary_registry("invalid-timeouts");
+        let package = root.join("safety-profiles/invalid");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("README.md"), "fixture\n").unwrap();
+        std::fs::write(package.join("LICENSE"), "fixture\n").unwrap();
+        std::fs::write(
+            package.join("package.yaml"),
+            r#"package:
+  namespace: safety-profiles
+  name: invalid
+  version: 1.0.0
+  kind: safety-profile
+classes:
+  heater:
+    safe_state: off
+    heartbeat_timeout: -1 ms
+  fan:
+    safe_state: off
+    heartbeat_timeout: 0.5 us
+  stepper_motor:
+    safe_state: disabled
+    heartbeat_timeout: 0.0000001 us
+"#,
+        )
+        .unwrap();
+        let registry = crate::LocalRegistry::load(&root);
+        let errors = registry
+            .find("safety-profiles", "invalid")
+            .unwrap()
+            .safety_profile_payload()
+            .unwrap_err();
+        for code in ["E0634", "E0635"] {
+            assert!(errors.iter().any(|diagnostic| diagnostic.code == code));
+        }
+        let tiny = super::ClassPolicy {
+            safe_state: super::SafeState::Disabled,
+            heartbeat_timeout: Some("0.0000001 us".to_string()),
+            requires_sensor: false,
+        };
+        assert_eq!(tiny.heartbeat_timeout_us(), None);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

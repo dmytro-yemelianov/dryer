@@ -6,8 +6,8 @@ golden tests"), spec §24.1.
 
 ## Purpose
 
-The simulator is the first *executing* consumer of a resolved machine: it takes
-the resolved graph + a trivial job and produces a deterministic event trace.
+The simulator is the first *executing* consumer of a compiled controller artifact:
+it takes the artifact + a trivial job and produces a deterministic event trace.
 It exists to (a) freeze end-to-end goldens before any firmware exists, and
 (b) force the control-protocol semantics (§16) to be designed against an
 implementation that can fail loudly.
@@ -38,8 +38,9 @@ VirtualClock ──► SimTransport ──► SimController ──► TraceLog
   early/late or off the 1 ms execution quantum, kept in timestamp order, and executed
   only when due. Immediate commands retain the original v0 behavior. The controller
   enforces the safety envelope locally — heartbeat timeout forces declared safe
-  states (§18.1), and faults latch. Safe states and timeouts come from the resolved
-  safety profile, not test constants. Continuous step-segment underrun remains tied
+  states (§18.1), and faults latch. Safe states and integer timeouts come from the
+  locked `dryer.controller-safety/v1` artifact, not profile rereads or test constants.
+  Continuous step-segment underrun remains tied
   to the future step-segment vocabulary; this v0 queue does not invent that policy.
 - **Plant models**: first-order thermal plant per heater
   (`dT/dt = (P·k − (T − T_amb))/τ`) with integer-tick integration; endstop =
@@ -53,7 +54,8 @@ VirtualClock ──► SimTransport ──► SimController ──► TraceLog
 ## Golden end-to-end test (the step-9 exit)
 
 ```text
-resolve(minimal-cartesian) → lock → job: [home X, heat to 60 °C, wait, move]
+resolve(minimal-cartesian) → lock v3 → compile safety artifact
+→ job: [home X, heat to 60 °C, wait, move]
 → run simulator (fixed seed, fixed tick budget)
 → trace == examples/minimal-cartesian/job-trace.golden   (drift-gated in CI)
 ```

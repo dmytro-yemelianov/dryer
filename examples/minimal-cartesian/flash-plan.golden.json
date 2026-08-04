@@ -3,7 +3,7 @@
   "mode": "dry_run",
   "ready": true,
   "controller": "mainboard",
-  "lock_hash": "sha256:fc084bb35fd5037ecf4d7ed7808ec3288582e3761c80bef344b92533affc7182",
+  "lock_hash": "sha256:78c77f8780202d452526596d6e03fd79a26bf6222185f326f6adb5a8f7670932",
   "board": "boards/example-mainboard@1.0.0",
   "method": "dfu",
   "transport": "usb",

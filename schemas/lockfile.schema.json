@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dryer.yemelianov.dev/schemas/lockfile.schema.json",
-  "title": "Dryer machine.lock v2",
-  "description": "Generated capture of one successful resolution. Users do not edit it. Normative reference implementation: crates/machine-lock. v2 adds portable full-package content hashes; registry source, firmware targets, protocol versions, and feature flags remain deferred — see the crate docs.",
+  "title": "Dryer machine.lock v3",
+  "description": "Generated capture of one successful resolution. Users do not edit it. Normative reference implementation: crates/machine-lock. v3 adds a required, versioned controller-local safety partition while preserving portable full-package content hashes. Registry source, firmware targets, protocol versions, and feature flags remain deferred — see the crate docs.",
   "type": "object",
   "additionalProperties": false,
   "required": ["lock_version", "machine_hash", "resolver_version", "packages", "safety_profile", "controllers"],
   "properties": {
-    "lock_version": { "const": 2 },
+    "lock_version": { "const": 3 },
     "machine_hash": { "$ref": "#/$defs/sha256" },
     "resolver_version": { "type": "string" },
     "packages": {
@@ -17,18 +17,7 @@
     "safety_profile": { "$ref": "#/$defs/locked_package" },
     "controllers": {
       "type": "object",
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["board", "resolved_resources"],
-        "properties": {
-          "board": { "type": "string" },
-          "resolved_resources": {
-            "type": "object",
-            "additionalProperties": { "type": "string" }
-          }
-        }
-      }
+      "additionalProperties": { "$ref": "#/$defs/locked_controller" }
     }
   },
   "$defs": {
@@ -41,6 +30,44 @@
         "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*/[a-z][a-z0-9_-]*@.+$" },
         "manifest_hash": { "$ref": "#/$defs/sha256" },
         "content_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "locked_controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board", "resolved_resources", "safety"],
+      "properties": {
+        "board": { "type": "string", "minLength": 1 },
+        "resolved_resources": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "safety": { "$ref": "#/$defs/controller_safety" }
+      }
+    },
+    "controller_safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "states"],
+      "properties": {
+        "schema": { "const": "dryer.controller-safety/v1" },
+        "states": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/safe_state" }
+        }
+      }
+    },
+    "safe_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "class", "resource", "state"],
+      "properties": {
+        "component": { "type": "string", "minLength": 1 },
+        "class": { "type": "string", "minLength": 1 },
+        "resource": { "type": "string", "minLength": 1 },
+        "state": { "enum": ["off", "disabled"] },
+        "heartbeat_timeout_us": { "type": "integer", "minimum": 1 },
+        "sensor": { "type": "string", "minLength": 1 }
       }
     }
   }

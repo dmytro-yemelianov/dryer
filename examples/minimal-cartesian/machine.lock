@@ -1,4 +1,4 @@
-lock_version: 2
+lock_version: 3
 machine_hash: sha256:24309adb115a1ca858d6530b09b24bad0077eecbcec840fb8683d8d5a4379182
 resolver_version: 0.1.0
 packages:
@@ -15,12 +15,12 @@ packages:
   manifest_hash: sha256:4217b9b074c2d2d28596a40a4768e97994b5bac6e5a759e3e935420ed0811f0e
   content_hash: sha256:cb8987e6cf7fed527bb3ceaa85a8508514809fa7948da8d362360323cfff850c
 - id: safety-profiles/desktop-fdm@1.0.0
-  manifest_hash: sha256:34abc60fdff7f998703ba423a00e5572f307b1bd642395f0e94e5ba5d28a1efd
-  content_hash: sha256:a0f8a8bcceff70b31f1be1179cfc71076a111bd961d282a79fca9689a3b10bd8
+  manifest_hash: sha256:d628288ee439f9bc406bc5cc694802e344090724ff26fbc20ee726648882a7a5
+  content_hash: sha256:85b1f6152a3c6828f8319840448432b2af3261992f2e22de2a880be42beb6d89
 safety_profile:
   id: safety-profiles/desktop-fdm@1.0.0
-  manifest_hash: sha256:34abc60fdff7f998703ba423a00e5572f307b1bd642395f0e94e5ba5d28a1efd
-  content_hash: sha256:a0f8a8bcceff70b31f1be1179cfc71076a111bd961d282a79fca9689a3b10bd8
+  manifest_hash: sha256:d628288ee439f9bc406bc5cc694802e344090724ff26fbc20ee726648882a7a5
+  content_hash: sha256:85b1f6152a3c6828f8319840448432b2af3261992f2e22de2a880be42beb6d89
 controllers:
   mainboard:
     board: boards/example-mainboard
@@ -29,3 +29,16 @@ controllers:
       hotend_sensor/input: thermistor0
       x_driver/connected_to: motor0
       y_driver/requires.connector: motor1
+    safety:
+      schema: dryer.controller-safety/v1
+      states:
+      - component: hotend_heater
+        class: heater
+        resource: heater0
+        state: off
+        heartbeat_timeout_us: 500000
+        sensor: thermistor0
+      - component: x_motor
+        class: stepper_motor
+        resource: motor0
+        state: disabled
