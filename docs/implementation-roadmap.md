@@ -61,8 +61,14 @@ tests exist and pass, not that a type was declared.
   Time)/`requires_sensor`, §18.2–§18.3); the machine's profile must exist (E1500),
   every component driving a `power_output` must belong to a covered class (E1501 —
   the §30 "no unresolved safety defaults" gate), and class requirements are enforced
-  (sensorless heater → E1502). *Remaining:* voltage-domain compatibility, timing
-  budgets, compiling safe states into controller artifacts (firmware phases).
+  (sensorless heater → E1502). Slice 7 added **voltage-domain validation**: devices
+  declare acceptable domains (§10.1 membership); explicit-claim mismatches are E1302
+  — a connector declaring NO domain never satisfies a non-empty requirement — and
+  search allocation treats the domain as a hard candidate filter, recorded in the
+  assignment provenance. *Remaining:* timing budgets — deliberately absent until
+  boards map connectors to timer/DMA peripherals, so there is data to validate
+  against rather than an assumption; and compiling safe states into controller
+  artifacts (firmware phases).
 - [~] **7. `machine-lock` canonical serialization and hashing** — `forge-machine-lock`
   produces a deterministic lockfile (canonical JSON bytes + `sha256:` lock hash; YAML
   on disk) binding the machine-source hash, exact package versions with manifest

@@ -10,6 +10,8 @@ device:
 
 requires:
   connector: stepper_driver_socket
+  voltage_domains:
+    - logic_3v3
 
 dependencies:
   chips/generic-mcu:

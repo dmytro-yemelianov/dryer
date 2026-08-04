@@ -35,6 +35,12 @@ pub struct Requires {
     /// the most specific placement requirement it may state.
     #[serde(default)]
     pub connector: Option<String>,
+    /// Acceptable connector voltage domains (§10.1 membership constraint).
+    /// Empty = no requirement. A connector with NO declared domain does
+    /// not satisfy a non-empty list — electrical compatibility is never
+    /// assumed from silence.
+    #[serde(default)]
+    pub voltage_domains: Vec<String>,
 }
 
 impl crate::LoadedPackage {

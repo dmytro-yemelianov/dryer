@@ -610,9 +610,13 @@ fn resolve_doc(
         let Ok(payload) = dev.device_payload() else {
             continue; // payload errors already surface when explicitly used
         };
-        let Some(required_kind) = payload.requires.and_then(|r| r.connector) else {
+        let Some(requires) = payload.requires else {
             continue;
         };
+        let Some(required_kind) = requires.connector else {
+            continue;
+        };
+        let required_domains = requires.voltage_domains;
         // Which controller to search: an explicit `controller:` attribute,
         // or the only controller when the machine has exactly one.
         let ctrl_name = match comp.attributes.get("controller").and_then(|v| v.as_str()) {
@@ -648,7 +652,20 @@ fn resolve_doc(
             .filter(|(_, c)| c.kind == required_kind)
             .map(|(id, _)| format!("{ctrl_name}.{id}"))
             .collect();
-        let chosen = candidates.iter().find(|t| !claims.contains_key(*t));
+        // Voltage domains are a HARD constraint (§10.1): an eligible
+        // candidate must carry one of the required domains; a connector
+        // with no declared domain never satisfies a non-empty requirement.
+        let domain_ok = |target: &str| -> bool {
+            required_domains.is_empty()
+                || target
+                    .split_once('.')
+                    .and_then(|(_, port)| board.connectors.get(port))
+                    .and_then(|c| c.voltage_domain.as_deref())
+                    .is_some_and(|d| required_domains.iter().any(|r| r == d))
+        };
+        let chosen = candidates
+            .iter()
+            .find(|t| !claims.contains_key(*t) && domain_ok(t));
         let Some(target) = chosen else {
             diagnostics.push(
                 Diagnostic::error(
@@ -673,11 +690,20 @@ fn resolve_doc(
                 resource: ResourceId(target.clone()),
                 connector_kind: required_kind.clone(),
                 candidates_considered: candidates.clone(),
-                constraints_applied: vec![
-                    format!("connector kind == {required_kind}"),
-                    "first free candidate in stable connector order".to_string(),
-                    "exclusive ownership".to_string(),
-                ],
+                constraints_applied: {
+                    let mut c = vec![
+                        format!("connector kind == {required_kind}"),
+                        "first free candidate in stable connector order".to_string(),
+                        "exclusive ownership".to_string(),
+                    ];
+                    if !required_domains.is_empty() {
+                        c.push(format!(
+                            "voltage domain in [{}]",
+                            required_domains.join(", ")
+                        ));
+                    }
+                    c
+                },
             });
     }
 
@@ -685,11 +711,56 @@ fn resolve_doc(
         return fail(std::mem::take(diagnostics), phases_run.clone());
     }
 
-    // --- Phase 8: electrical validation (first check) -------------------
-    // A component declaring its draw (`current: "3 A"`) must fit the
-    // connector's `max_current`. Voltage-domain and timing checks are
-    // later slices of this phase.
+    // --- Phase 8: electrical validation ---------------------------------
+    // (a) a component's declared `current` draw must fit the connector's
+    //     `max_current`; (b) a device's required voltage domains must
+    //     include the assigned connector's — silence never satisfies a
+    //     requirement. Timing budgets are deliberately absent: no board
+    //     maps connectors to timer peripherals yet, so there is nothing
+    //     truthful to validate against (stated in the roadmap).
     phases_run.push(Phase::ElectricalValidation);
+    for (cname, comp) in &doc.components {
+        let Some(dev) = select(&format!("devices/{}", comp.kind)) else {
+            continue;
+        };
+        let Ok(payload) = dev.device_payload() else {
+            continue;
+        };
+        let domains = payload
+            .requires
+            .map(|r| r.voltage_domains)
+            .unwrap_or_default();
+        if domains.is_empty() {
+            continue;
+        }
+        for assignment in resolved.assignments.get(cname).into_iter().flatten() {
+            let Some((ctrl, port)) = assignment.resource.0.split_once('.') else {
+                continue;
+            };
+            let connector_domain = boards
+                .get(ctrl)
+                .and_then(|b| b.connectors.get(port))
+                .and_then(|c| c.voltage_domain.clone());
+            let ok = connector_domain
+                .as_deref()
+                .is_some_and(|d| domains.iter().any(|r| r == d));
+            if !ok {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1302",
+                        format!(
+                            "component '{cname}': device '{}' requires voltage domain [{}] but '{}' declares {}",
+                            dev.reference,
+                            domains.join(", "),
+                            assignment.resource.0,
+                            connector_domain.as_deref().unwrap_or("none"),
+                        ),
+                    )
+                    .at(format!("components.{cname}")),
+                );
+            }
+        }
+    }
     for (cname, comp) in &doc.components {
         let Some(draw_raw) = comp.attributes.get("current").and_then(|v| v.as_str()) else {
             continue;
@@ -1087,6 +1158,44 @@ mod tests {
         assert!(o.is_ok(), "warning, not error: {:#?}", o.diagnostics);
         let d = o.diagnostics.iter().find(|d| d.code == "E1130").unwrap();
         assert!(d.message.contains("cartesian") && d.message.contains("corexy"));
+    }
+
+    /// Voltage domains are checked on explicit claims: legacy-probe
+    /// requires logic_5v, and thermistor0 declares no domain — silence
+    /// never satisfies an electrical requirement.
+    #[test]
+    fn a_voltage_domain_requirement_rejects_an_undeclared_connector() {
+        let probed = fixture().replace(
+            "  hotend_sensor:\n    type: thermistor\n    model: generic-3950\n    input: mainboard.thermistor0",
+            "  hotend_sensor:\n    type: thermistor\n    model: generic-3950\n\n  z_probe:\n    type: legacy-probe\n    input: mainboard.thermistor0",
+        );
+        assert_ne!(probed, fixture(), "replacement must apply");
+        let o = resolve_source(&probed, &registry());
+        assert!(!o.is_ok());
+        let d = o.diagnostics.iter().find(|d| d.code == "E1302").unwrap();
+        assert!(
+            d.message.contains("logic_5v") && d.message.contains("none"),
+            "{}",
+            d.message
+        );
+    }
+
+    /// And on search allocation the domain is a hard candidate filter:
+    /// the tmc2209 requirement (logic_3v3) matches the fixture sockets,
+    /// and the constraint is recorded in the assignment provenance.
+    #[test]
+    fn search_allocation_records_the_voltage_domain_constraint() {
+        let o = resolve_source(&fixture(), &registry());
+        assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
+        let g = o.resolved.unwrap();
+        let y = &g.assignments["y_driver"][0];
+        assert!(
+            y.constraints_applied
+                .iter()
+                .any(|c| c.contains("logic_3v3")),
+            "constraints: {:?}",
+            y.constraints_applied
+        );
     }
 
     /// The closure pulls tmc2209's chip dependency at the highest version
