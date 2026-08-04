@@ -77,8 +77,8 @@ impl SpanIndex {
 }
 
 enum Frame {
-    Map { expect_key: bool },
-    Seq { idx: usize },
+    Map { expect_key: bool, flow: bool },
+    Seq { idx: usize, flow: bool },
 }
 
 #[derive(Default)]
@@ -122,18 +122,25 @@ impl Receiver {
         value: &str,
         style: TScalarStyle,
         mark: Marker,
+        flow: bool,
     ) -> SourceSpan {
         let start_column = mark.col() + 1;
-        let end = self.scalar_end(value, style, mark);
+        let end = self.scalar_end(value, style, mark, flow);
         SourceSpan::new(path, SourcePosition::new(mark.line(), start_column), end)
     }
 
-    fn scalar_end(&self, value: &str, style: TScalarStyle, mark: Marker) -> SourcePosition {
+    fn scalar_end(
+        &self,
+        value: &str,
+        style: TScalarStyle,
+        mark: Marker,
+        flow: bool,
+    ) -> SourcePosition {
         match style {
             TScalarStyle::SingleQuoted => self.quoted_scalar_end(mark, '\''),
             TScalarStyle::DoubleQuoted => self.quoted_scalar_end(mark, '"'),
             TScalarStyle::Literal | TScalarStyle::Folded => self.block_scalar_end(mark),
-            TScalarStyle::Plain => self.plain_scalar_end(value, mark),
+            TScalarStyle::Plain => self.plain_scalar_end(value, mark, flow),
         }
     }
 
@@ -205,12 +212,13 @@ impl Receiver {
         SourcePosition::new(last_line + 1, end_line.chars().count() + 1)
     }
 
-    fn plain_scalar_end(&self, value: &str, mark: Marker) -> SourcePosition {
+    fn plain_scalar_end(&self, value: &str, mark: Marker, flow: bool) -> SourcePosition {
         let Some(line) = self.source_lines.get(mark.line().saturating_sub(1)) else {
             return SourcePosition::new(mark.line(), mark.col() + value.chars().count() + 1);
         };
         let chars: Vec<char> = line.chars().collect();
-        let (first_end, terminated) = plain_line_end(&chars, mark.col());
+        let (raw_first_end, terminated) = plain_line_end(&chars, mark.col(), flow);
+        let first_end = raw_first_end.min(mark.col() + value.chars().count());
         if terminated {
             return SourcePosition::new(mark.line(), first_end + 1);
         }
@@ -227,7 +235,7 @@ impl Receiver {
                 break;
             }
             let continuation_chars: Vec<char> = continuation.chars().collect();
-            let (end, stopped) = plain_line_end(&continuation_chars, indent);
+            let (end, stopped) = plain_line_end(&continuation_chars, indent, flow);
             last_line = line_idx;
             last_end = end;
             if stopped {
@@ -263,10 +271,17 @@ impl Receiver {
             .unwrap_or_else(|| SourcePosition::new(mark.line(), mark.col() + 2))
     }
 
+    fn starts_with(&self, mark: Marker, expected: char) -> bool {
+        self.source_lines
+            .get(mark.line().saturating_sub(1))
+            .and_then(|line| line.chars().nth(mark.col()))
+            == Some(expected)
+    }
+
     fn enter_container(&mut self) {
         let seg = if let Some(key) = self.pending.take() {
             Some(key)
-        } else if let Some(Frame::Seq { idx }) = self.frames.last_mut() {
+        } else if let Some(Frame::Seq { idx, .. }) = self.frames.last_mut() {
             let s = format!("[{idx}]");
             *idx += 1;
             Some(s)
@@ -287,14 +302,14 @@ impl Receiver {
         if self.pushed.pop().unwrap_or(false) {
             self.path.pop();
         }
-        if let Some(Frame::Map { expect_key }) = self.frames.last_mut() {
+        if let Some(Frame::Map { expect_key, .. }) = self.frames.last_mut() {
             *expect_key = true; // the container was this key's value
         }
     }
 
     fn on_value_scalar(&mut self) {
         match self.frames.last_mut() {
-            Some(Frame::Map { expect_key }) => {
+            Some(Frame::Map { expect_key, .. }) => {
                 self.pending = None;
                 *expect_key = true;
             }
@@ -307,39 +322,47 @@ impl MarkedEventReceiver for Receiver {
     fn on_event(&mut self, ev: Event, mark: Marker) {
         match ev {
             Event::MappingStart(..) => {
+                let flow = self.starts_with(mark, '{');
                 self.enter_container();
-                self.frames.push(Frame::Map { expect_key: true });
+                self.frames.push(Frame::Map {
+                    expect_key: true,
+                    flow,
+                });
             }
             Event::SequenceStart(..) => {
+                let flow = self.starts_with(mark, '[');
                 self.enter_container();
-                self.frames.push(Frame::Seq { idx: 0 });
+                self.frames.push(Frame::Seq { idx: 0, flow });
             }
             Event::MappingEnd | Event::SequenceEnd => self.leave_container(),
             Event::Scalar(value, style, ..) => {
                 let mut key_entry: Option<String> = None;
                 let mut item_entry: Option<String> = None;
+                let mut flow_context = false;
                 match self.frames.last_mut() {
-                    Some(Frame::Map { expect_key }) if *expect_key => {
+                    Some(Frame::Map { expect_key, flow }) if *expect_key => {
                         let mut full = self.path.clone();
                         full.push(value.clone());
                         key_entry = Some(join(&full));
+                        flow_context = *flow;
                         *expect_key = false;
                     }
                     Some(Frame::Map { .. }) => {}
-                    Some(Frame::Seq { idx }) => {
+                    Some(Frame::Seq { idx, flow }) => {
                         let mut full = self.path.clone();
                         full.push(format!("[{}]", *idx));
                         item_entry = Some(join(&full));
+                        flow_context = *flow;
                         *idx += 1;
                     }
                     None => {}
                 }
                 if let Some(p) = key_entry {
-                    let span = self.scalar_span(p.clone(), &value, style, mark);
+                    let span = self.scalar_span(p.clone(), &value, style, mark, flow_context);
                     self.map.insert(p, span);
                     self.pending = Some(value);
                 } else if let Some(p) = item_entry {
-                    let span = self.scalar_span(p.clone(), &value, style, mark);
+                    let span = self.scalar_span(p.clone(), &value, style, mark, flow_context);
                     self.map.insert(p, span);
                 } else {
                     self.on_value_scalar();
@@ -347,7 +370,7 @@ impl MarkedEventReceiver for Receiver {
             }
             Event::Alias(_) => {
                 let item_entry = match self.frames.last_mut() {
-                    Some(Frame::Seq { idx }) => {
+                    Some(Frame::Seq { idx, .. }) => {
                         let mut full = self.path.clone();
                         full.push(format!("[{}]", *idx));
                         *idx += 1;
@@ -381,24 +404,26 @@ fn is_escaped(chars: &[char], index: usize) -> bool {
         == 1
 }
 
-fn plain_line_end(chars: &[char], start: usize) -> (usize, bool) {
+fn plain_line_end(chars: &[char], start: usize, flow: bool) -> (usize, bool) {
     let mut end = chars.len();
+    let mut terminated = false;
     for i in start..chars.len() {
         let c = chars[i];
         let preceded_by_space = i == start || chars[i.saturating_sub(1)].is_whitespace();
         let followed_by_space = chars.get(i + 1).map_or(true, |next| next.is_whitespace());
-        if matches!(c, ',' | ']' | '}')
+        if (flow && matches!(c, ',' | ']' | '}'))
             || (c == '#' && preceded_by_space)
             || (c == ':' && followed_by_space)
         {
             end = i;
+            terminated = true;
             break;
         }
     }
     while end > start && chars[end - 1].is_whitespace() {
         end -= 1;
     }
-    (end, end < chars.len())
+    (end, terminated)
 }
 
 #[cfg(test)]
@@ -459,6 +484,32 @@ list:
                 SourcePosition::new(5, 5),
                 SourcePosition::new(6, 9),
             )
+        );
+    }
+
+    #[test]
+    fn plain_scalar_terminators_respect_block_and_flow_context() {
+        let block_line = "  - hello, world ] ok }";
+        let block = SpanIndex::build(&format!("items:\n{block_line}\n"));
+        assert_eq!(
+            block.get_span("items[0]").unwrap().end,
+            SourcePosition::new(2, block_line.chars().count() + 1)
+        );
+
+        let multiline = SpanIndex::build("items:\n  - first   \n    second\n");
+        assert_eq!(
+            multiline.get_span("items[0]").unwrap().end,
+            SourcePosition::new(3, 11)
+        );
+
+        let flow = SpanIndex::build("items: [one, two]\n");
+        assert_eq!(
+            flow.get_span("items[0]").unwrap().end,
+            SourcePosition::new(1, 12)
+        );
+        assert_eq!(
+            flow.get_span("items[1]").unwrap().end,
+            SourcePosition::new(1, 17)
         );
     }
 
