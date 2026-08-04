@@ -902,14 +902,14 @@ It must contain:
 Example:
 
 ```yaml
-lock_version: 1
+lock_version: 2
 
 machine_hash: sha256:...
 
 packages:
   - id: boards/btt-octopus-pro@1.1.0
-    source: official
-    hash: sha256:...
+    manifest_hash: sha256:...
+    content_hash: sha256:...
 
 controllers:
   mainboard:

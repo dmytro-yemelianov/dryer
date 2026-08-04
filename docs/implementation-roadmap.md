@@ -87,13 +87,16 @@ tests exist and pass, not that a type was declared.
   controller artifacts (firmware phases).
 - [~] **7. `machine-lock` canonical serialization and hashing** — `dryer-machine-lock`
   produces a deterministic lockfile (canonical JSON bytes + `sha256:` lock hash; YAML
-  on disk) binding the machine-source hash, exact package versions with manifest
-  hashes, resolver version, and per-controller resolved resources. Golden at
+  on disk) binding the machine-source hash, exact package versions, resolver version,
+  and per-controller resolved resources. Golden at
   `examples/minimal-cartesian/machine.lock`, drift-gated in CI. Slice 3 added the
-  pinned `safety_profile` (id + manifest hash, §12). *Remaining for [x]:* registry
-  source identity, full package content digests (§6.6), firmware targets, protocol
-  versions, feature flags — each gated on machinery that does not exist yet (stated
-  in the crate docs).
+  pinned `safety_profile` (id + manifest hash, §12). Slice 11 introduced lockfile v2
+  and §6.6 **full package content digests**: a domain-separated, length-framed sha256
+  over sorted portable paths and every regular-file byte; symlinks and non-UTF-8 paths
+  are rejected, v1 locks remain readable, and flash planning blocks companion-file
+  drift as well as manifest drift. *Remaining for [x]:* registry source identity,
+  firmware targets, protocol versions, and feature flags — each gated on machinery
+  that does not exist yet (stated in the crate docs).
 - [ ] **8. Klipper config and build-parameter export** *(license/provenance record
   required first — §23.5)*
 - [x] **9. Simulated controller and end-to-end golden tests** — `dryer-simulator`
@@ -121,7 +124,7 @@ tests exist and pass, not that a type was declared.
   and multi-match results are blocking states; selection never falls back to a partial
   match. Board packages now carry validated flash recipes (method, bootloader-mode
   selector, transition instructions, sha256 verification, recovery). The planner
-  verifies registry manifest drift and artifact bytes, then emits versioned,
+  verifies registry manifest/full-content drift and artifact bytes, then emits versioned,
   byte-stable JSON containing expected current firmware, exact board identity,
   signature slot, planned steps, and recovery. The public API and example CLI are
   deliberately read-only: no method can open or flash a device. The fixture plan is

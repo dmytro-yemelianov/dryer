@@ -2,9 +2,10 @@
 //! registry loading (spec §6, §20.2 "local directory sources").
 //!
 //! v0.1 scope: identity/reference syntax, manifest parsing, structure
-//! checks (§6.3 required files), and a deterministic local registry index.
-//! Version *resolution*, trust policy and integrity hashes belong to the
-//! future `package-registry` and `machine-resolver` crates.
+//! checks (§6.3 required files), a deterministic local registry index, and
+//! a portable full-content digest for lockfile integrity (§6.6). Version
+//! *resolution* and trust policy belong to `machine-resolver` and a future
+//! package-registry implementation.
 
 pub mod board;
 pub mod chip;
@@ -14,9 +15,14 @@ pub mod safety;
 
 use dryer_machine_schema::{valid_identifier, Diagnostic};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::io;
 use std::path::{Path, PathBuf};
+
+const CONTENT_HASH_DOMAIN: &[u8] = b"dryer-package-content-v1\0";
+const SNAPSHOT_VERIFY_RETRIES: usize = 3;
 
 /// Package kinds the registry supports (spec §6.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +125,170 @@ pub struct LoadedPackage {
     pub kind: PackageKind,
     pub dir: PathBuf,
     pub manifest: Manifest,
+}
+
+impl LoadedPackage {
+    /// Read one byte-verified snapshot of the complete package tree.
+    pub fn snapshot(&self) -> io::Result<PackageSnapshot> {
+        package_snapshot(&self.dir)
+    }
+
+    /// A portable digest of every regular file under this package root.
+    pub fn content_hash(&self) -> io::Result<String> {
+        Ok(self.snapshot()?.content_hash())
+    }
+}
+
+/// One stable, in-memory view of every regular file in a package.
+///
+/// Manifest and full-content hashes derived from this value necessarily refer
+/// to the same bytes. Construction compares consecutive complete reads and
+/// retries when paths or bytes change, including same-length rewrites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageSnapshot {
+    files: BTreeMap<String, Vec<u8>>,
+}
+
+impl PackageSnapshot {
+    /// Exact `package.yaml` bytes from this snapshot.
+    pub fn manifest_bytes(&self) -> io::Result<&[u8]> {
+        self.files
+            .get("package.yaml")
+            .map(Vec::as_slice)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "package snapshot contains no package.yaml",
+                )
+            })
+    }
+
+    /// Portable digest of all paths and bytes in this snapshot.
+    pub fn content_hash(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(CONTENT_HASH_DOMAIN);
+        for (relative, bytes) in &self.files {
+            hasher.update((relative.len() as u64).to_be_bytes());
+            hasher.update(relative.as_bytes());
+            hasher.update((bytes.len() as u64).to_be_bytes());
+            hasher.update(bytes);
+        }
+        format!("sha256:{:x}", hasher.finalize())
+    }
+}
+
+/// Hash an entire package tree deterministically (§6.6).
+///
+/// Entries are sorted by UTF-8 relative path with `/` separators. The hash
+/// commits to a domain tag, each path and its length, then each file's length
+/// and bytes. Filesystem metadata is intentionally excluded. Symlinks and
+/// non-UTF-8 paths are rejected so the result cannot depend on host traversal
+/// behavior or escape the package root.
+pub fn package_content_hash(root: &Path) -> io::Result<String> {
+    Ok(package_snapshot(root)?.content_hash())
+}
+
+/// Read a stable package snapshot, retrying when the tree changes between
+/// consecutive complete reads.
+pub fn package_snapshot(root: &Path) -> io::Result<PackageSnapshot> {
+    package_snapshot_with_hook(root, |_| Ok(()))
+}
+
+fn package_snapshot_with_hook(
+    root: &Path,
+    mut between_reads: impl FnMut(usize) -> io::Result<()>,
+) -> io::Result<PackageSnapshot> {
+    let mut observed = read_package_tree(root)?;
+    for attempt in 0..=SNAPSHOT_VERIFY_RETRIES {
+        between_reads(attempt)?;
+        let verified = read_package_tree(root)?;
+        if observed == verified {
+            return Ok(PackageSnapshot { files: verified });
+        }
+        observed = verified;
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "package tree '{}' remained unstable after {} verification retries",
+            root.display(),
+            SNAPSHOT_VERIFY_RETRIES
+        ),
+    ))
+}
+
+fn read_package_tree(root: &Path) -> io::Result<BTreeMap<String, Vec<u8>>> {
+    let root_type = std::fs::symlink_metadata(root)?.file_type();
+    if root_type.is_symlink() || !root_type.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "package root '{}' must be a directory, not a symlink",
+                root.display()
+            ),
+        ));
+    }
+
+    let mut files = Vec::new();
+    collect_content_files(root, root, &mut files)?;
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut snapshot = BTreeMap::new();
+    for (relative, path) in files {
+        snapshot.insert(relative, std::fs::read(path)?);
+    }
+    Ok(snapshot)
+}
+
+fn collect_content_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut Vec<(String, PathBuf)>,
+) -> io::Result<()> {
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "package content may not contain symlink '{}'",
+                    path.display()
+                ),
+            ));
+        }
+        if file_type.is_dir() {
+            collect_content_files(root, &path, files)?;
+        } else if file_type.is_file() {
+            files.push((portable_relative_path(root, &path)?, path));
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "package content contains unsupported entry '{}'",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn portable_relative_path(root: &Path, path: &Path) -> io::Result<String> {
+    path.strip_prefix(root)
+        .expect("collected path is under package root")
+        .components()
+        .map(|component| {
+            component.as_os_str().to_str().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("package path '{}' is not valid UTF-8", path.display()),
+                )
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()
+        .map(|components| components.join("/"))
 }
 
 /// A deterministic index over a local `packages/` directory.
@@ -326,6 +496,19 @@ impl LocalRegistry {
 mod tests {
     use super::*;
 
+    fn temporary_package_dir(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "dryer-package-content-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(path.join("nested")).unwrap();
+        path
+    }
+
     #[test]
     fn refs_parse_and_display_round_trip() {
         let r = PackageRef::parse("boards/btt-octopus-pro@1.1.0").unwrap();
@@ -401,5 +584,52 @@ mod tests {
         let pkg = reg.find("devices", "tmc2209").expect("fixture package");
         assert_eq!(pkg.kind, PackageKind::Device);
         assert_eq!(pkg.reference.to_string(), "devices/tmc2209@2.1.0");
+    }
+
+    #[test]
+    fn content_hash_is_order_independent_and_covers_companion_files() {
+        let first = temporary_package_dir("first");
+        let second = temporary_package_dir("second");
+
+        std::fs::write(first.join("package.yaml"), b"package: fixture\n").unwrap();
+        std::fs::write(first.join("README.md"), b"documentation\n").unwrap();
+        std::fs::write(first.join("nested/data.bin"), [0_u8, 1, 2, 3]).unwrap();
+
+        // Same paths and bytes, deliberately created in a different order.
+        std::fs::write(second.join("nested/data.bin"), [0_u8, 1, 2, 3]).unwrap();
+        std::fs::write(second.join("README.md"), b"documentation\n").unwrap();
+        std::fs::write(second.join("package.yaml"), b"package: fixture\n").unwrap();
+
+        let expected = package_content_hash(&first).unwrap();
+        assert_eq!(expected, package_content_hash(&second).unwrap());
+        assert!(expected.starts_with("sha256:"));
+
+        std::fs::write(second.join("README.md"), b"changed documentation\n").unwrap();
+        assert_ne!(expected, package_content_hash(&second).unwrap());
+
+        std::fs::remove_dir_all(first).unwrap();
+        std::fs::remove_dir_all(second).unwrap();
+    }
+
+    #[test]
+    fn snapshot_retries_an_intervening_same_length_manifest_rewrite() {
+        let package = temporary_package_dir("same-length-rewrite");
+        std::fs::write(package.join("package.yaml"), b"package: alpha\n").unwrap();
+        std::fs::write(package.join("README.md"), b"stable\n").unwrap();
+        let before = package_snapshot(&package).unwrap();
+
+        let mut rewrote = false;
+        let after = package_snapshot_with_hook(&package, |_| {
+            if !rewrote {
+                std::fs::write(package.join("package.yaml"), b"package: bravo\n")?;
+                rewrote = true;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(after.manifest_bytes().unwrap(), b"package: bravo\n");
+        assert_ne!(before.content_hash(), after.content_hash());
+        std::fs::remove_dir_all(package).unwrap();
     }
 }

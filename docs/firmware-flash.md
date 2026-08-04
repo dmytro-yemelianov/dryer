@@ -74,6 +74,7 @@ current firmware identity. It verifies:
 
 - the controller has exactly one version-pinned board package;
 - the local board manifest still matches its lockfile hash;
+- every file in the local board package still matches the v2 content hash;
 - the board has a valid default flash recipe;
 - the artifact's observed sha256 equals the expected build digest;
 - device selection is unique.

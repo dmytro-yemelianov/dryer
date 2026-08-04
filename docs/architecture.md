@@ -48,8 +48,10 @@ mutating deployment implementation.
   `path`/`line`/`column` compatibility projection.)
 - Dependencies point downward only. `machine-resolver` depends on the model/parser
   layer; no model crate depends on the resolver.
-- `machine-lock` captures successful resolution. `firmware-flash` consumes the lock
-  and board-package metadata but cannot call back into resolution or mutate hardware.
+- `machine-lock` captures successful resolution and exact package-tree content
+  digests. `firmware-flash` consumes the lock and board-package metadata, rejects
+  manifest or companion-file drift, but cannot call back into resolution or mutate
+  hardware.
 - The simulator's public semantic types stay independent of configuration crates;
   only its tests adapt resolved safety policy into simulated controller inputs.
 

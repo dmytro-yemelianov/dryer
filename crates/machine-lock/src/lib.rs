@@ -1,14 +1,12 @@
 //! `machine.lock` (spec §12, §29 step 7): a generated, canonical, hashed
 //! capture of one successful resolution.
 //!
-//! v0.1 field scope, stated honestly: exact package versions + manifest
-//! hashes, the machine-source hash, resolver identity, the pinned safety
-//! profile, and per-controller resolved resources. Deferred to later
-//! slices (each needs machinery that does not exist yet): registry source
-//! identity, firmware target triples and build profiles, protocol
-//! versions, feature flags — and the package hash covers `package.yaml`
-//! only, not the full content tree (§6.6's content digest arrives with
-//! the registry).
+//! v0.2 field scope, stated honestly: exact package versions + portable
+//! full-content digests (§6.6), manifest hashes, the machine-source hash,
+//! resolver identity, the pinned safety profile, and per-controller resolved
+//! resources. Deferred to later slices (each needs machinery that does not
+//! exist yet): registry source identity, firmware target triples and build
+//! profiles, protocol versions, and feature flags.
 //!
 //! Canonical form: JSON with every map a `BTreeMap`, so byte-identical
 //! lockfiles for identical inputs. The on-disk file is YAML for humans;
@@ -17,13 +15,13 @@
 use dryer_machine_resolver::ResolvedGraph;
 use dryer_machine_schema::Diagnostic;
 use dryer_package_model::LocalRegistry;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-pub const LOCK_VERSION: u32 = 1;
+pub const LOCK_VERSION: u32 = 2;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Lockfile {
     pub lock_version: u32,
     /// sha256 of the exact machine-manifest bytes that resolved.
@@ -41,9 +39,13 @@ pub struct Lockfile {
 pub struct LockedPackage {
     /// `namespace/name@version`.
     pub id: String,
-    /// sha256 of the package's `package.yaml` bytes (manifest-only; see
-    /// the module docs for the §6.6 full-content-digest deferral).
+    /// sha256 of the package's `package.yaml` bytes, retained for focused
+    /// manifest drift diagnostics.
     pub manifest_hash: String,
+    /// Portable sha256 over every path and regular-file byte in the package.
+    /// Empty only when reading a legacy v1 lockfile.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content_hash: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -51,6 +53,63 @@ pub struct LockedController {
     pub board: String,
     /// `component/via` → connector id on this controller.
     pub resolved_resources: BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct LockfileRef<'a> {
+    lock_version: u32,
+    machine_hash: &'a str,
+    resolver_version: &'a str,
+    packages: &'a [LockedPackage],
+    safety_profile: &'a LockedPackage,
+    controllers: &'a BTreeMap<String, LockedController>,
+}
+
+#[derive(Deserialize)]
+struct LockfileOwned {
+    lock_version: u32,
+    machine_hash: String,
+    resolver_version: String,
+    packages: Vec<LockedPackage>,
+    safety_profile: LockedPackage,
+    controllers: BTreeMap<String, LockedController>,
+}
+
+impl Serialize for Lockfile {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.validate().map_err(serde::ser::Error::custom)?;
+        LockfileRef {
+            lock_version: self.lock_version,
+            machine_hash: &self.machine_hash,
+            resolver_version: &self.resolver_version,
+            packages: &self.packages,
+            safety_profile: &self.safety_profile,
+            controllers: &self.controllers,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Lockfile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = LockfileOwned::deserialize(deserializer)?;
+        let lock = Self {
+            lock_version: wire.lock_version,
+            machine_hash: wire.machine_hash,
+            resolver_version: wire.resolver_version,
+            packages: wire.packages,
+            safety_profile: wire.safety_profile,
+            controllers: wire.controllers,
+        };
+        lock.validate().map_err(serde::de::Error::custom)?;
+        Ok(lock)
+    }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -84,15 +143,25 @@ pub fn lock(
                 format!("resolved package '{pkg}' is no longer in the registry"),
             )]);
         };
-        let manifest_bytes = std::fs::read(found.dir.join("package.yaml")).map_err(|e| {
+        let snapshot = found.snapshot().map_err(|e| {
             vec![Diagnostic::error(
                 "E1400",
-                format!("cannot hash {}: {e}", found.reference),
+                format!(
+                    "cannot snapshot package content for {}: {e}",
+                    found.reference
+                ),
+            )]
+        })?;
+        let manifest_bytes = snapshot.manifest_bytes().map_err(|e| {
+            vec![Diagnostic::error(
+                "E1400",
+                format!("cannot hash manifest for {}: {e}", found.reference),
             )]
         })?;
         packages.push(LockedPackage {
             id: found.reference.to_string(),
-            manifest_hash: sha256_hex(&manifest_bytes),
+            manifest_hash: sha256_hex(manifest_bytes),
+            content_hash: snapshot.content_hash(),
         });
     }
     packages.sort_by(|a, b| a.id.cmp(&b.id));
@@ -155,6 +224,26 @@ pub fn lock(
 }
 
 impl Lockfile {
+    fn validate(&self) -> Result<(), String> {
+        if self.lock_version >= 2 {
+            for (index, package) in self.packages.iter().enumerate() {
+                if package.content_hash.is_empty() {
+                    return Err(format!(
+                        "lockfile v{} package[{index}] '{}' has no content_hash",
+                        self.lock_version, package.id
+                    ));
+                }
+            }
+            if self.safety_profile.content_hash.is_empty() {
+                return Err(format!(
+                    "lockfile v{} safety_profile '{}' has no content_hash",
+                    self.lock_version, self.safety_profile.id
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Canonical bytes: deterministic JSON. The hash of a lockfile is the
     /// hash of these bytes regardless of how the YAML file was formatted.
     pub fn canonical_bytes(&self) -> Vec<u8> {
@@ -228,9 +317,14 @@ mod tests {
             .packages
             .iter()
             .all(|p| p.manifest_hash.starts_with("sha256:")));
+        assert!(l
+            .packages
+            .iter()
+            .all(|p| p.content_hash.starts_with("sha256:")));
         assert!(l.machine_hash.starts_with("sha256:"));
         assert_eq!(l.safety_profile.id, "safety-profiles/desktop-fdm@1.0.0");
         assert!(l.safety_profile.manifest_hash.starts_with("sha256:"));
+        assert!(l.safety_profile.content_hash.starts_with("sha256:"));
     }
 
     #[test]
@@ -243,5 +337,57 @@ mod tests {
         let reformatted = format!("{source}\n# trailing comment\n");
         let b = lock(&reformatted, &registry, &resolved).unwrap();
         assert_ne!(a.machine_hash, b.machine_hash);
+    }
+
+    #[test]
+    fn legacy_v1_locks_without_content_hashes_still_parse() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let current = lock(&source, &registry, &resolved).unwrap().to_yaml();
+        let legacy = current
+            .replace("lock_version: 2", "lock_version: 1")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("content_hash:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed = Lockfile::from_yaml(&legacy).unwrap();
+        assert_eq!(parsed.lock_version, 1);
+        assert!(parsed
+            .packages
+            .iter()
+            .all(|package| package.content_hash.is_empty()));
+        assert!(parsed.safety_profile.content_hash.is_empty());
+    }
+
+    #[test]
+    fn v2_locks_require_every_content_hash_at_parse_and_serialize_boundaries() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let valid = lock(&source, &registry, &resolved).unwrap();
+        let yaml = valid.to_yaml();
+        let mut removed = false;
+        let missing_package_hash = yaml
+            .lines()
+            .filter(|line| {
+                if !removed && line.trim_start().starts_with("content_hash:") {
+                    removed = true;
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let error = Lockfile::from_yaml(&missing_package_hash).unwrap_err();
+        assert!(error.to_string().contains("has no content_hash"), "{error}");
+
+        let mut missing_safety_hash = valid;
+        missing_safety_hash.safety_profile.content_hash.clear();
+        let error = serde_yaml::to_string(&missing_safety_hash).unwrap_err();
+        assert!(error.to_string().contains("has no content_hash"), "{error}");
     }
 }

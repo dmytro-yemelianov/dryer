@@ -11,4 +11,5 @@ description = "Package identity, manifests, dependency ranges, and local directo
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 semver = { workspace = true }
+sha2 = { workspace = true }
 dryer-machine-schema = { path = "../machine-schema" }
