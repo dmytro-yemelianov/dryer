@@ -81,6 +81,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dryer-control-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "dryer-firmware-build"
 version = "0.1.0"
 dependencies = [
@@ -176,6 +183,7 @@ dependencies = [
 name = "dryer-simulator"
 version = "0.1.0"
 dependencies = [
+ "dryer-control-protocol",
  "dryer-firmware-build",
  "dryer-machine-lock",
  "dryer-machine-parser",

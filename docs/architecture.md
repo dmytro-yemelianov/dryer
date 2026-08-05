@@ -11,7 +11,7 @@ Platform API                 — none
 Workflow runtime             — none
 Machine state service        — none
 Motion planner               — none
-Control protocol             — none
+Control protocol             — control-protocol (v1 command framing); no native client yet
 MCU runtime                  — simulator (behavioral test model, no firmware)
 Hardware                     — none
 ─────────────────────────────────────────────
@@ -24,10 +24,10 @@ Package ecosystem            — package-model
 Resolver vocabulary          — resource-model
 ```
 
-The workspace has crossed the original Phase 0-only boundary, but only through
-testable planning seams: the simulator models controller behavior and
-`firmware-flash` describes what a flash would do. Neither is a production runtime or
-mutating deployment implementation.
+The workspace has crossed the original Phase 0-only boundary through testable
+planning and protocol seams: the simulator models controller behavior and
+`control-protocol` fixes the v1 command-frame ABI. There is still no production
+host runtime, MCU firmware, or mutating deployment implementation.
 
 ## Crate dependency rule
 

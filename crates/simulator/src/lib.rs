@@ -7,43 +7,23 @@
 //! float formatting in traces (temperatures serialize as milli-degrees) —
 //! so a trace is a byte-stable golden artifact.
 //!
-//! The simulator speaks *typed command semantics*, not wire frames: the
-//! §16 codec, when it arrives, must round-trip to these types rather than
-//! freezing bytes before behavior. Integration is deliberately simple
+//! The simulator speaks *typed command semantics* internally; the shared
+//! §16 v1 codec round-trips these types without entering the timing path.
+//! Integration is deliberately simple
 //! (fixed 1 ms steps, first-order plants, bang-bang heaters); fidelity
 //! beyond "makes wait-for-temp and homing mean something" is a non-goal.
 
+pub use dryer_control_protocol::{Command, CommandEnvelope, Tick};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-/// One microsecond of virtual time.
-pub type Tick = u64;
 pub const TICKS_PER_MS: Tick = 1_000;
 /// Fixed plant-integration step (1 ms).
 pub const STEP_TICKS: Tick = TICKS_PER_MS;
 
 // ---------------------------------------------------------------------------
-// Commands and events — the semantic layer (§16 without §16.3 framing)
+// Commands and events — the semantic layer (§16; framing lives in control-protocol)
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "cmd")]
-pub enum Command {
-    Heartbeat,
-    SetHeaterTarget {
-        heater: String,
-        target_milli_c: i64,
-    },
-    Home {
-        axis: String,
-        rate_um_s: u64,
-    },
-    Move {
-        axis: String,
-        distance_um: i64,
-        rate_um_s: u64,
-    },
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "event")]
@@ -212,18 +192,12 @@ impl Default for TransportConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-struct TransportCommand {
-    command: Command,
-    execute_at: Option<Tick>,
-}
-
 /// In-memory duplex carrying `(deliver_at, command + optional execute_at)`.
 #[derive(Debug)]
 pub struct SimTransport {
     cfg: TransportConfig,
     rng: u64,
-    in_flight: VecDeque<(Tick, TransportCommand)>,
+    in_flight: VecDeque<(Tick, CommandEnvelope)>,
     link_up: bool,
 }
 
@@ -276,7 +250,7 @@ impl SimTransport {
         let at = now
             .saturating_add(self.cfg.latency_ticks)
             .saturating_add(jitter);
-        let message = TransportCommand {
+        let message = CommandEnvelope {
             command: cmd,
             execute_at,
         };
@@ -296,8 +270,8 @@ impl SimTransport {
         self.link_up = true;
     }
 
-    fn deliver_due(&mut self, now: Tick) -> Vec<TransportCommand> {
-        let mut due: Vec<(Tick, TransportCommand)> = Vec::new();
+    fn deliver_due(&mut self, now: Tick) -> Vec<CommandEnvelope> {
+        let mut due: Vec<(Tick, CommandEnvelope)> = Vec::new();
         self.in_flight.retain(|(at, command)| {
             if *at <= now {
                 due.push((*at, command.clone()));
@@ -544,8 +518,8 @@ impl SimController {
         });
     }
 
-    fn accept(&mut self, incoming: TransportCommand) {
-        let TransportCommand {
+    fn accept(&mut self, incoming: CommandEnvelope) {
+        let CommandEnvelope {
             command,
             execute_at,
         } = incoming;

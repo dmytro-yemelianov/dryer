@@ -1181,7 +1181,7 @@ Emergency stop
 
 ### 16.3 Message framing
 
-Every frame must contain:
+Every frame contains:
 
 ```text
 protocol version
@@ -1192,15 +1192,34 @@ payload
 checksum
 ```
 
-Use a serialization format suitable for embedded systems.
+The v1 Dryer command codec (`dryer.control/v1`) is a bounded custom
+fixed-layout encoding. All multi-byte integers are little-endian. The frame
+layout is:
 
-Preferred candidates:
+```text
+offset  size  field
+0       2     magic: 0x44 0x52 ("DR")
+2       1     protocol version: 1
+3       1     message type: 1 (command)
+4       4     sequence number: u32
+8       2     payload length: u16
+10      N     payload
+10+N    4     CRC-32C (Castagnoli), little-endian
+```
 
-- postcard;
-- custom fixed-layout encoding;
-- defmt-compatible internal structures.
+CRC-32C covers bytes 2 through the end of the payload; the magic and checksum
+are excluded. Command payloads begin with an envelope-flags byte (bit 0 marks
+an optional `execute_at: u64` timestamp; all other bits are reserved), then a
+command tag: `0` heartbeat, `1` heater target, `2` home, or `3` move. Strings
+are a one-byte UTF-8 length followed by bytes and are limited to 63 bytes.
+Payloads are limited to 128 bytes and complete frames to 142 bytes.
 
-Do not use JSON in the real-time control channel.
+The v1 codec rejects unsupported versions/types, unknown flags/tags, malformed
+lengths, invalid UTF-8, and checksum failures in a deterministic order. It is
+transport-independent, allocation-free on encode, and does not use JSON in the
+real-time control channel. The reference implementation and byte-level vectors
+live in `crates/control-protocol`; simulator behavior continues to operate on
+typed commands and uses the codec only for compatibility tests.
 
 ### 16.4 Buffer management
 

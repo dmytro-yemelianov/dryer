@@ -11,7 +11,8 @@ into locked, explainable firmware and runtime configuration.
 > [dry](https://github.com/dmytro-yemelianov/dry) compiles and audits the *job*;
 > Dryer configures and (eventually) runs the *machine*.
 
-**Status: configuration layer complete, no runtime yet.** This repository contains
+**Status: configuration layer complete; the v1 control-protocol boundary is now
+implemented, while the native host/MCU runtime is still pending.** This repository contains
 the Machine Graph v0.1 schema and parser (exact source locations), the package model
 with a multi-version local registry and portable source descriptor, the resource
 model, an eleven-phase deterministic resolver (transitive dependency closure, graph
@@ -21,7 +22,7 @@ validation, controller-local safety partitioning, target-aware artifact planning
 explainable assignments), hashed `machine.lock` generation, deterministic controller
 safety/build-plan artifacts with an inspectable hashed reference image, a controller
 simulator, and cross-platform USB discovery with non-mutating flash-plan generation.
-There is no firmware runtime, motion stack, control protocol, or mutating flasher yet;
+There is no firmware runtime, motion stack, or mutating flasher yet;
 see `docs/implementation-roadmap.md` for exactly what exists versus what is
 planned — a checked box there means tests pass, not that a type was declared.
 

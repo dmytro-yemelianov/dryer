@@ -151,6 +151,11 @@ tests exist and pass, not that a type was declared.
   Multi-controller clock skew stays explicitly deferred per the accepted design Q3;
   it requires a real synchronization protocol and multi-controller fixture rather
   than assumptions in this single-controller contract.
+  Slice 17 adds the transport-independent `dryer.control/v1` command codec:
+  bounded little-endian frames with sequence numbers, scheduled-command envelopes,
+  CRC-32C integrity, byte goldens, malformed-input coverage, and simulator
+  compatibility checks. The codec is a wire boundary only; no native host client
+  or MCU firmware is implied by this slice.
 - [x] **10. Cross-platform flash discovery and dry-run plans** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies
