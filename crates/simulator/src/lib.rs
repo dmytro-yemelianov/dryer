@@ -17,6 +17,13 @@ pub use dryer_control_protocol::{Command, CommandEnvelope, Tick};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+mod clock_transport;
+
+pub use clock_transport::{
+    ClockLinkConfig, ClockTransportConfig, ClockTransportConfigError, ControllerClock,
+    ControllerClockError, SimClockFrame, SimClockTransport, SimClockTransportError,
+};
+
 pub const TICKS_PER_MS: Tick = 1_000;
 /// Fixed plant-integration step (1 ms).
 pub const STEP_TICKS: Tick = TICKS_PER_MS;
