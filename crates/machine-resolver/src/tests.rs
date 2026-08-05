@@ -935,3 +935,29 @@ fn referenced_workflow_packages_are_included_in_resolution_closure() {
     );
 }
 
+#[test]
+fn valid_workflow_parameter_invocation_resolves_cleanly() {
+    let with_params = format!(
+        "{}\nworkflows:\n  start:\n    package: workflows/print-start\n    parameters:\n      bed_temperature: \"60 degC\"\n",
+        fixture()
+    );
+    let o = resolve_source(&with_params, &registry());
+    assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
+}
+
+#[test]
+fn workflow_invocation_with_unknown_parameter_emits_e1701() {
+    let bad_params = format!(
+        "{}\nworkflows:\n  start:\n    package: workflows/print-start\n    parameters:\n      unknown_param: 42\n",
+        fixture()
+    );
+    let o = resolve_source(&bad_params, &registry());
+    assert!(!o.is_ok());
+    let d = o.diagnostics.iter().find(|d| d.code == "E1701").unwrap();
+    assert!(
+        d.message.contains("unknown_param") && d.message.contains("workflows/print-start"),
+        "{}",
+        d.message
+    );
+}
+

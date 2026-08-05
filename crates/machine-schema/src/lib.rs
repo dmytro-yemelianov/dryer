@@ -476,13 +476,38 @@ pub struct Calibration {
 ///
 /// Represented as plain strings (e.g. `workflows/default-print-start`) to keep
 /// machine documents package-agnostic while still typing this section explicitly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct WorkflowRef(pub String);
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WorkflowRef {
+    Simple(String),
+    Invocation(WorkflowInvocation),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowInvocation {
+    pub package: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parameters: BTreeMap<String, serde_yaml::Value>,
+}
 
 impl WorkflowRef {
+    pub fn package(&self) -> &str {
+        match self {
+            Self::Simple(raw) => raw.as_str(),
+            Self::Invocation(inv) => inv.package.as_str(),
+        }
+    }
+
     pub fn as_str(&self) -> &str {
-        &self.0
+        self.package()
+    }
+
+    pub fn parameters(&self) -> Option<&BTreeMap<String, serde_yaml::Value>> {
+        match self {
+            Self::Simple(_) => None,
+            Self::Invocation(inv) => (!inv.parameters.is_empty()).then_some(&inv.parameters),
+        }
     }
 }
 

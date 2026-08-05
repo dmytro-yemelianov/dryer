@@ -137,7 +137,7 @@ impl crate::LoadedPackage {
             }
         }
         for lock in &workflow.locks {
-            if !valid_identifier(lock) {
+            if !valid_action_name(lock) {
                 diagnostics.push(Diagnostic::error(
                     "E0656",
                     format!(
