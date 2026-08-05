@@ -54,6 +54,116 @@ pub struct WorkflowStep {
     pub with_arguments: BTreeMap<String, serde_yaml::Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoweringError {
+    NoCallAction,
+    UnknownAction { action: String },
+    MissingArgument { action: String, argument: String },
+    InvalidArgumentType { action: String, argument: String },
+}
+
+impl core::fmt::Display for LoweringError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoCallAction => write!(f, "workflow step has no call action"),
+            Self::UnknownAction { action } => write!(f, "unknown workflow step action '{action}'"),
+            Self::MissingArgument { action, argument } => {
+                write!(f, "action '{action}' requires argument '{argument}'")
+            }
+            Self::InvalidArgumentType { action, argument } => {
+                write!(f, "action '{action}' argument '{argument}' has an invalid type")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LoweringError {}
+
+impl WorkflowStep {
+    /// Lower this workflow step into a concrete control protocol command (§17).
+    pub fn lower(&self) -> Result<dryer_control_protocol::Command, LoweringError> {
+        let call = self.call.as_deref().ok_or(LoweringError::NoCallAction)?;
+        match call {
+            "heartbeat" | "system.heartbeat" => Ok(dryer_control_protocol::Command::Heartbeat),
+            "heater.set_target" => {
+                let heater = extract_string(&self.with_arguments, call, "heater")?;
+                let target_milli_c = extract_i64(&self.with_arguments, call, "target_milli_c")?;
+                Ok(dryer_control_protocol::Command::SetHeaterTarget {
+                    heater,
+                    target_milli_c,
+                })
+            }
+            "motion.home" => {
+                let axis = extract_string(&self.with_arguments, call, "axis")?;
+                let rate_um_s = extract_u64(&self.with_arguments, call, "rate_um_s")?;
+                Ok(dryer_control_protocol::Command::Home { axis, rate_um_s })
+            }
+            "motion.move" => {
+                let axis = extract_string(&self.with_arguments, call, "axis")?;
+                let distance_um = extract_i64(&self.with_arguments, call, "distance_um")?;
+                let rate_um_s = extract_u64(&self.with_arguments, call, "rate_um_s")?;
+                Ok(dryer_control_protocol::Command::Move {
+                    axis,
+                    distance_um,
+                    rate_um_s,
+                })
+            }
+            other => Err(LoweringError::UnknownAction {
+                action: other.to_string(),
+            }),
+        }
+    }
+}
+
+fn extract_string(
+    args: &BTreeMap<String, serde_yaml::Value>,
+    action: &str,
+    name: &str,
+) -> Result<String, LoweringError> {
+    let val = args.get(name).ok_or_else(|| LoweringError::MissingArgument {
+        action: action.to_string(),
+        argument: name.to_string(),
+    })?;
+    val.as_str()
+        .map(String::from)
+        .ok_or_else(|| LoweringError::InvalidArgumentType {
+            action: action.to_string(),
+            argument: name.to_string(),
+        })
+}
+
+fn extract_i64(
+    args: &BTreeMap<String, serde_yaml::Value>,
+    action: &str,
+    name: &str,
+) -> Result<i64, LoweringError> {
+    let val = args.get(name).ok_or_else(|| LoweringError::MissingArgument {
+        action: action.to_string(),
+        argument: name.to_string(),
+    })?;
+    val.as_i64()
+        .ok_or_else(|| LoweringError::InvalidArgumentType {
+            action: action.to_string(),
+            argument: name.to_string(),
+        })
+}
+
+fn extract_u64(
+    args: &BTreeMap<String, serde_yaml::Value>,
+    action: &str,
+    name: &str,
+) -> Result<u64, LoweringError> {
+    let val = args.get(name).ok_or_else(|| LoweringError::MissingArgument {
+        action: action.to_string(),
+        argument: name.to_string(),
+    })?;
+    val.as_u64()
+        .ok_or_else(|| LoweringError::InvalidArgumentType {
+            action: action.to_string(),
+            argument: name.to_string(),
+        })
+}
+
 impl crate::LoadedPackage {
     /// Parse this package's workflow payload (`E065x` diagnostics).
     pub fn workflow_payload(&self) -> Result<WorkflowPackageFile, Vec<Diagnostic>> {
@@ -331,5 +441,45 @@ steps:
             .unwrap_err();
         assert_eq!(errors[0].code, "E0650");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workflow_step_lowering_converts_steps_to_typed_commands() {
+        use super::*;
+
+        let mut args = BTreeMap::new();
+        args.insert("heater".into(), serde_yaml::Value::String("hotend_heater".into()));
+        args.insert("target_milli_c".into(), serde_yaml::Value::Number(200_000.into()));
+
+        let step = WorkflowStep {
+            call: Some("heater.set_target".into()),
+            with_arguments: args,
+        };
+
+        let lowered = step.lower().expect("step lowers cleanly");
+        assert_eq!(
+            lowered,
+            dryer_control_protocol::Command::SetHeaterTarget {
+                heater: "hotend_heater".into(),
+                target_milli_c: 200_000,
+            }
+        );
+
+        let heartbeat_step = WorkflowStep {
+            call: Some("system.heartbeat".into()),
+            with_arguments: BTreeMap::new(),
+        };
+        assert_eq!(heartbeat_step.lower().unwrap(), dryer_control_protocol::Command::Heartbeat);
+
+        let bad_step = WorkflowStep {
+            call: Some("unknown.action".into()),
+            with_arguments: BTreeMap::new(),
+        };
+        assert_eq!(
+            bad_step.lower(),
+            Err(LoweringError::UnknownAction {
+                action: "unknown.action".into()
+            })
+        );
     }
 }
