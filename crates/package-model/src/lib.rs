@@ -3,9 +3,10 @@
 //!
 //! v0.1 scope: identity/reference syntax, manifest parsing, structure
 //! checks (§6.3 required files), a deterministic local registry index, and
-//! a portable full-content digest for lockfile integrity (§6.6). Version
-//! *resolution* and trust policy belong to `machine-resolver` and a future
-//! package-registry implementation.
+//! portable registry provenance, and a portable full-content digest for
+//! lockfile integrity (§6.6). Version *resolution* belongs to
+//! `machine-resolver`; fetching, signatures, and trust policy remain future
+//! package-registry work.
 
 pub mod board;
 pub mod chip;
@@ -23,6 +24,124 @@ use std::path::{Path, PathBuf};
 
 const CONTENT_HASH_DOMAIN: &[u8] = b"dryer-package-content-v1\0";
 const SNAPSHOT_VERIFY_RETRIES: usize = 3;
+pub const REGISTRY_DESCRIPTOR_SCHEMA: &str = "dryer.registry/v1";
+pub const REGISTRY_SOURCE_SCHEMA: &str = "dryer.registry-source/v1";
+
+/// Portable provenance for a loaded registry. `descriptor_hash` binds the
+/// exact `registry.yaml` bytes; package content remains pinned separately.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistrySource {
+    pub schema: String,
+    pub id: String,
+    pub uri: String,
+    pub descriptor_hash: String,
+}
+
+impl RegistrySource {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema != REGISTRY_SOURCE_SCHEMA {
+            return Err(format!(
+                "registry source schema '{}' is not '{}'",
+                self.schema, REGISTRY_SOURCE_SCHEMA
+            ));
+        }
+        if !valid_identifier(&self.id) {
+            return Err(format!(
+                "registry source id '{}' is not a valid identifier",
+                self.id
+            ));
+        }
+        if !portable_registry_uri(&self.uri) {
+            return Err(format!(
+                "registry source URI '{}' is not a portable absolute URI",
+                self.uri
+            ));
+        }
+        if !valid_sha256(&self.descriptor_hash) {
+            return Err("registry descriptor_hash is not a lowercase sha256 digest".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegistryDescriptor {
+    schema: String,
+    id: String,
+    uri: String,
+}
+
+fn portable_registry_uri(uri: &str) -> bool {
+    if uri.is_empty()
+        || uri.trim() != uri
+        || uri.bytes().any(|byte| byte.is_ascii_whitespace())
+        || uri.contains('\\')
+    {
+        return false;
+    }
+    let Some((scheme, location)) = uri.split_once(':') else {
+        return false;
+    };
+    !location.is_empty()
+        && scheme != "file"
+        && scheme.bytes().enumerate().all(|(index, byte)| match byte {
+            b'a'..=b'z' => true,
+            b'0'..=b'9' | b'+' | b'-' | b'.' => index > 0,
+            _ => false,
+        })
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    })
+}
+
+fn registry_source(root: &Path) -> Result<RegistrySource, Box<Diagnostic>> {
+    let path = root.join("registry.yaml");
+    let bytes = std::fs::read(&path).map_err(|error| {
+        Box::new(Diagnostic::error(
+            "E0607",
+            format!(
+                "cannot read registry descriptor {}: {error}",
+                path.display()
+            ),
+        ))
+    })?;
+    let descriptor: RegistryDescriptor = serde_yaml::from_slice(&bytes).map_err(|error| {
+        Box::new(Diagnostic::error(
+            "E0608",
+            format!(
+                "registry descriptor {} does not parse: {error}",
+                path.display()
+            ),
+        ))
+    })?;
+    if descriptor.schema != REGISTRY_DESCRIPTOR_SCHEMA {
+        return Err(Box::new(Diagnostic::error(
+            "E0609",
+            format!(
+                "registry descriptor schema '{}' is not '{}'",
+                descriptor.schema, REGISTRY_DESCRIPTOR_SCHEMA
+            ),
+        )));
+    }
+    let source = RegistrySource {
+        schema: REGISTRY_SOURCE_SCHEMA.to_string(),
+        id: descriptor.id,
+        uri: descriptor.uri,
+        descriptor_hash: format!("sha256:{:x}", Sha256::digest(&bytes)),
+    };
+    source
+        .validate()
+        .map_err(|error| Box::new(Diagnostic::error("E0609", error)))?;
+    Ok(source)
+}
 
 /// Package kinds the registry supports (spec §6.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,6 +419,7 @@ fn portable_relative_path(root: &Path, path: &Path) -> io::Result<String> {
 ///   (the directory name must equal the manifest version, E0606)
 #[derive(Debug, Default)]
 pub struct LocalRegistry {
+    pub source: Option<RegistrySource>,
     pub packages: Vec<LoadedPackage>,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -321,6 +441,10 @@ impl LocalRegistry {
                 return reg;
             }
         };
+        match registry_source(root) {
+            Ok(source) => reg.source = Some(source),
+            Err(diagnostic) => reg.diagnostics.push(*diagnostic),
+        }
         let mut name_dirs: Vec<(String, String, PathBuf)> = Vec::new();
         for ns in namespaces.flatten() {
             if !ns.path().is_dir() {
@@ -584,6 +708,33 @@ mod tests {
         let pkg = reg.find("devices", "tmc2209").expect("fixture package");
         assert_eq!(pkg.kind, PackageKind::Device);
         assert_eq!(pkg.reference.to_string(), "devices/tmc2209@2.1.0");
+        let source = reg.source.as_ref().expect("registry provenance");
+        assert_eq!(source.schema, REGISTRY_SOURCE_SCHEMA);
+        assert_eq!(source.id, "dryer-official");
+        assert_eq!(
+            source.uri,
+            "git+https://github.com/dmytro-yemelianov/dryer.git?subdir=packages"
+        );
+        assert!(source.descriptor_hash.starts_with("sha256:"));
+        source.validate().unwrap();
+    }
+
+    #[test]
+    fn invalid_registry_provenance_is_diagnosed_without_accepting_it() {
+        let root = temporary_package_dir("invalid-registry-source");
+        std::fs::write(
+            root.join("registry.yaml"),
+            "schema: dryer.registry/v1\nid: Invalid\nuri: file:///tmp/packages\n",
+        )
+        .unwrap();
+
+        let registry = LocalRegistry::load(&root);
+        assert!(registry.source.is_none());
+        assert!(registry
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "E0609"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

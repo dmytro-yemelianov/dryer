@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Deterministic per-controller firmware input artifacts compiled from machine.lock"
+description = "Deterministic controller build plans and inspectable reference images compiled from machine.lock"
 
 [dependencies]
 dryer-machine-lock = { path = "../machine-lock" }
@@ -16,4 +16,3 @@ sha2 = { workspace = true }
 [dev-dependencies]
 dryer-machine-resolver = { path = "../machine-resolver" }
 dryer-package-model = { path = "../package-model" }
-

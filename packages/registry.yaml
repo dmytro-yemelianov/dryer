@@ -1,0 +1,3 @@
+schema: dryer.registry/v1
+id: dryer-official
+uri: git+https://github.com/dmytro-yemelianov/dryer.git?subdir=packages

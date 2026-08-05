@@ -10,6 +10,7 @@ description = "Cross-platform USB discovery and deterministic, non-mutating firm
 [dependencies]
 dryer-machine-lock = { path = "../machine-lock" }
 dryer-package-model = { path = "../package-model" }
+dryer-firmware-build = { path = "../firmware-build" }
 nusb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

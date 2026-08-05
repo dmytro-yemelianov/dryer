@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Deterministic simulated controller: virtual clock, typed command semantics, faulty transport, safety-envelope enforcement, byte-stable traces"
 
 [dependencies]
+dryer-control-protocol = { path = "../control-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

@@ -105,7 +105,7 @@ tests exist and pass, not that a type was declared.
   target triple, toolchain, build profile, protocol/ABI versions, and feature flags;
   the resolver combines those with exact board/chip packages and selected native
   device drivers. Missing target metadata is blocking (E1600/E1601/E1602).
-- [~] **7. `machine-lock` canonical serialization and hashing** — `dryer-machine-lock`
+- [x] **7. `machine-lock` canonical serialization and hashing** — `dryer-machine-lock`
   produces a deterministic lockfile (canonical JSON bytes + `sha256:` lock hash; YAML
   on disk) binding the machine-source hash, exact package versions, resolver version,
   and per-controller resolved resources. Golden at
@@ -118,8 +118,19 @@ tests exist and pass, not that a type was declared.
   versioned compiled safety partition for every controller while v1/v2 remain
   readable. Slice 14 introduced lockfile v4, pinning the resolved target triple,
   toolchain/build profile, memory and boot layout, protocol/ABI versions, sorted
-  features, and exact native-driver packages; v3 locks remain readable. *Remaining
-  for [x]:* registry source identity and expected reproducible output hashes.
+  features, and exact native-driver packages; v3 locks remain readable. Slice 15
+  introduced lockfile v5 and **portable registry provenance**: every lock records a
+  validated logical registry id and portable non-`file:` URI plus a sha256 over the
+  exact `registry.yaml` descriptor bytes. Descriptorless registries remain inspectable
+  but cannot produce v5 locks; flash planning compares the live descriptor before
+  reading board metadata or artifacts; legacy v1-v4 locks remain readable. Slice 16
+  completed the remaining **reproducible output contract** (§21.1): build-plan v2
+  records the exact format, stable path, byte length, and SHA-256 emitted by the
+  deterministic `dryer.controller-image/v1` reference backend. The canonical image is
+  lock-bound, inspectable, drift-gated, and independently verified by flash planning.
+  It is explicitly `deployable: false`, so no planning path can mistake the reference
+  configuration container for executable MCU firmware. A native target runtime and
+  linker backend remain later firmware work, not an unpinned lockfile default.
 - [ ] **8. Klipper config and build-parameter export** *(license/provenance record
   required first — §23.5)*
 - [x] **9. Simulated controller and end-to-end golden tests** — `dryer-simulator`
@@ -140,6 +151,48 @@ tests exist and pass, not that a type was declared.
   Multi-controller clock skew stays explicitly deferred per the accepted design Q3;
   it requires a real synchronization protocol and multi-controller fixture rather
   than assumptions in this single-controller contract.
+  Slice 17 adds the transport-independent `dryer.control/v1` command codec:
+  bounded little-endian frames with sequence numbers, scheduled-command envelopes,
+  CRC-32C integrity, byte goldens, malformed-input coverage, and simulator
+  compatibility checks. The codec is a wire boundary only; no native host client
+  or MCU firmware is implied by this slice.
+  Slice 18 adds `dryer-control-client`: a synchronous outbound boundary with a
+  reusable bounded frame buffer, sequence rollover/error semantics, and a
+  simulator sink adapter. It deliberately does not perform OS I/O, clock sync,
+  motion planning, workflow execution, or receive/ack handling yet.
+  Slice 19 adds the protocol-only §16.4 queue-status response: message type `2`
+  reuses the `dryer.control/v1` envelope with an exact 22-byte payload carrying
+  `u16` capacity/fill, `u64` earliest/latest accepted controller ticks, and an
+  underrun state bit. Reserved bits, lengths, prefixes, and checksums are
+  strictly validated with byte-level goldens. Client receive handling exposes
+  that strict decoder without adding transport policy; simulator wire responses
+  remain follow-up work.
+  Slice 20 adds the transport-independent §16.5 clock estimator:
+  `dryer-clock-sync` consumes four-timestamp exchanges and widens offset intervals
+  around the host midpoint using the physically measured host exchange span plus
+  an explicit maximum relative-slew bound. It never subtracts controller processing
+  duration from host duration in the bounded path. The estimator derives
+  conservative signed drift bounds and projects checked integer-only
+  controller-time confidence windows using at least the configured drift envelope.
+  Host and controller ticks remain distinct clock domains already normalized to the
+  same one-microsecond resolution; the estimator does not perform unit conversion.
+  The standalone zero-slew observation helper retains its nominal
+  processing-excluded residual metric. The crate is allocation-free and `no_std`;
+  obtaining timestamps on a wire and applying queue/scheduling policy remain
+  separate follow-up boundaries.
+- [x] **21. Clock synchronization wire ABI** — `dryer-control-protocol` now
+  defines type-3 clock requests and type-4 responses with strict fixed payload
+  lengths, reserved-bit validation, CRC checks, and a sequence carried for
+  external exchange correlation.
+  `dryer-control-client` exposes transport-agnostic response decoding; host
+  timestamp capture and estimator/session matching remain deliberately outside
+  the codec.
+- [x] **22. Clock exchange session boundary** — `dryer-control-client` now
+  provides a one-outstanding event-driven session that captures caller clock
+  readings immediately around transport handoff and complete-frame receipt,
+  rejects unsolicited or mismatched responses, retires timed-out exchanges,
+  prevents sequence reuse, and feeds `dryer-clock-sync`. It adds no OS I/O or
+  blocking receive policy.
 - [x] **10. Cross-platform flash discovery and dry-run plans** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies
@@ -147,8 +200,9 @@ tests exist and pass, not that a type was declared.
   and multi-match results are blocking states; selection never falls back to a partial
   match. Board packages now carry validated flash recipes (method, bootloader-mode
   selector, transition instructions, sha256 verification, recovery). The planner
-  verifies registry manifest/full-content drift and artifact bytes, then emits versioned,
-  byte-stable JSON containing expected current firmware, exact board identity,
+  verifies registry manifest/full-content drift and artifact bytes against the derived
+  build-plan output pin, then emits versioned, byte-stable JSON containing expected
+  current firmware, exact board identity, artifact format/deployment eligibility,
   signature slot, planned steps, and recovery. The public API and example CLI are
   deliberately read-only: no method can open or flash a device. The fixture plan is
   drift-gated at `examples/minimal-cartesian/flash-plan.golden.json`; see

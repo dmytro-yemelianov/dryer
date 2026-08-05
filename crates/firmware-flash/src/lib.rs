@@ -8,13 +8,16 @@
 //! mismatch are represented as blocking plan states. Execution is a later,
 //! method-specific slice and must consume — not weaken — these checks.
 
+use dryer_firmware_build::{
+    verify_build_plan, verify_controller_image, ControllerBuildPlanArtifact,
+};
 use dryer_machine_lock::Lockfile;
 use dryer_package_model::{board::UsbSelector, LocalRegistry, PackageRef};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fmt, fs, path::Path};
 
-pub const FLASH_PLAN_SCHEMA: &str = "dryer.flash-plan/v0.1";
+pub const FLASH_PLAN_SCHEMA: &str = "dryer.flash-plan/v0.2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsbSelectionRule {
@@ -200,12 +203,6 @@ pub fn match_usb_devices(
 #[derive(Debug, Clone, Copy)]
 pub struct ArtifactSpec<'a> {
     pub path: &'a Path,
-    /// Stable path written to the plan. This may be bundle-relative even
-    /// when `path` is absolute on the host doing the dry run.
-    pub plan_path: &'a str,
-    /// Expected digest from the build/deployment input, including the
-    /// `sha256:` prefix. The planner independently hashes `path`.
-    pub expected_sha256: &'a str,
     pub signature: Option<&'a str>,
 }
 
@@ -213,6 +210,7 @@ pub struct ArtifactSpec<'a> {
 pub struct DryRunRequest<'a> {
     pub controller: &'a str,
     pub lock: &'a Lockfile,
+    pub build_plan: &'a ControllerBuildPlanArtifact,
     pub registry: &'a LocalRegistry,
     pub discovered_devices: &'a [DiscoveredUsbDevice],
     pub artifact: ArtifactSpec<'a>,
@@ -221,11 +219,13 @@ pub struct DryRunRequest<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactPlan {
+    pub format: String,
     pub path: String,
     pub size_bytes: u64,
     pub expected_sha256: String,
     pub observed_sha256: String,
     pub hash_matches: bool,
+    pub deployable: bool,
     pub signature: Option<String>,
 }
 
@@ -278,6 +278,7 @@ pub enum PlanError {
     InvalidBoardMetadata(String),
     MissingFlashMetadata(String),
     InvalidInput(String),
+    BuildOutput(String),
     ArtifactIo(std::io::Error),
 }
 
@@ -297,6 +298,9 @@ impl fmt::Display for PlanError {
                 write!(f, "board '{board}' has no usable flash metadata")
             }
             Self::InvalidInput(message) => write!(f, "invalid flash-plan input: {message}"),
+            Self::BuildOutput(message) => {
+                write!(f, "invalid locked firmware build output: {message}")
+            }
             Self::ArtifactIo(error) => write!(f, "cannot read firmware artifact: {error}"),
         }
     }
@@ -314,12 +318,31 @@ impl std::error::Error for PlanError {
 /// Produce a complete, non-mutating plan from locked package metadata,
 /// discovered USB inventory, and independently verified artifact bytes.
 pub fn plan_dry_run(request: DryRunRequest<'_>) -> Result<FlashPlan, PlanError> {
-    let expected_sha256 = normalize_sha256(request.artifact.expected_sha256)?;
-    if request.artifact.plan_path.trim().is_empty() {
-        return Err(PlanError::InvalidInput(
-            "artifact plan_path must not be empty".into(),
-        ));
+    request.lock.validate().map_err(PlanError::InvalidLock)?;
+    if request.lock.lock_version >= 5 {
+        let locked_source = request
+            .lock
+            .registry_source
+            .as_ref()
+            .expect("lockfile v5 validation requires a registry source");
+        let observed_source = request.registry.source.as_ref().ok_or_else(|| {
+            PlanError::RegistryDrift(
+                "local registry has no validated portable source descriptor".into(),
+            )
+        })?;
+        if observed_source != locked_source {
+            return Err(PlanError::RegistryDrift(format!(
+                "registry source expected '{}', {} at {}; observed '{}', {} at {}",
+                locked_source.id,
+                locked_source.descriptor_hash,
+                locked_source.uri,
+                observed_source.id,
+                observed_source.descriptor_hash,
+                observed_source.uri
+            )));
+        }
     }
+
     if request.expected_current_firmware.trim().is_empty()
         || request.expected_current_firmware.trim() != request.expected_current_firmware
     {
@@ -342,6 +365,9 @@ pub fn plan_dry_run(request: DryRunRequest<'_>) -> Result<FlashPlan, PlanError> 
         .controllers
         .get(request.controller)
         .ok_or_else(|| PlanError::UnknownController(request.controller.to_string()))?;
+    verify_build_plan(request.lock, request.controller, request.build_plan)
+        .map_err(|error| PlanError::BuildOutput(error.to_string()))?;
+    let build_plan = request.build_plan;
     let board_lock = exact_locked_board(request.lock, &controller.board)?;
     let board_ref = PackageRef::parse(&board_lock.id)
         .map_err(|error| PlanError::InvalidLock(error.to_string()))?;
@@ -404,12 +430,25 @@ pub fn plan_dry_run(request: DryRunRequest<'_>) -> Result<FlashPlan, PlanError> 
 
     let artifact_bytes = fs::read(request.artifact.path).map_err(PlanError::ArtifactIo)?;
     let observed_sha256 = sha256(&artifact_bytes);
+    let expected_sha256 = build_plan.expected_artifact.sha256.clone();
+    let hash_matches = observed_sha256 == expected_sha256;
+    if hash_matches {
+        verify_controller_image(
+            request.lock,
+            request.controller,
+            build_plan,
+            &artifact_bytes,
+        )
+        .map_err(|error| PlanError::BuildOutput(error.to_string()))?;
+    }
     let artifact = ArtifactPlan {
-        path: request.artifact.plan_path.to_string(),
+        format: build_plan.expected_artifact.format.clone(),
+        path: build_plan.expected_artifact.path.clone(),
         size_bytes: artifact_bytes.len() as u64,
         expected_sha256: expected_sha256.clone(),
-        hash_matches: observed_sha256 == expected_sha256,
+        hash_matches,
         observed_sha256,
+        deployable: build_plan.expected_artifact.deployable,
         signature: request.artifact.signature.map(str::to_owned),
     };
     let device_selection = match_usb_devices((&method.select).into(), request.discovered_devices);
@@ -428,6 +467,12 @@ pub fn plan_dry_run(request: DryRunRequest<'_>) -> Result<FlashPlan, PlanError> 
     }
     if !artifact.hash_matches {
         blocked_reasons.push("artifact sha256 does not match the expected build digest".into());
+    }
+    if !artifact.deployable {
+        blocked_reasons.push(format!(
+            "artifact format '{}' is an inspectable reference image, not a deployable controller executable",
+            artifact.format
+        ));
     }
 
     let mut steps = vec![PlanStep::InspectArtifact, PlanStep::SelectDevice];
@@ -489,20 +534,6 @@ fn exact_locked_board<'a>(
             "controller board '{board}' has multiple exact package pins"
         ))),
     }
-}
-
-fn normalize_sha256(value: &str) -> Result<String, PlanError> {
-    let Some(hex) = value.strip_prefix("sha256:") else {
-        return Err(PlanError::InvalidInput(
-            "expected_sha256 must start with 'sha256:'".into(),
-        ));
-    };
-    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(PlanError::InvalidInput(
-            "expected_sha256 must contain exactly 64 hexadecimal digits".into(),
-        ));
-    }
-    Ok(format!("sha256:{}", hex.to_ascii_lowercase()))
 }
 
 fn sha256(bytes: &[u8]) -> String {

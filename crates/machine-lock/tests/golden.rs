@@ -1,5 +1,5 @@
 use dryer_machine_lock::{lock, CONTROLLER_BUILD_SCHEMA, CONTROLLER_SAFETY_SCHEMA, LOCK_VERSION};
-use dryer_package_model::LocalRegistry;
+use dryer_package_model::{LocalRegistry, REGISTRY_SOURCE_SCHEMA};
 use std::path::{Path, PathBuf};
 
 fn repo_root() -> PathBuf {
@@ -33,6 +33,16 @@ fn normative_schema_tracks_the_current_lock_contract() {
     .unwrap();
 
     assert_eq!(schema["properties"]["lock_version"]["const"], LOCK_VERSION);
+    let lock_required = schema["required"].as_array().unwrap();
+    assert!(lock_required.iter().any(|field| field == "registry_source"));
+    assert_eq!(
+        schema["$defs"]["registry_source"]["properties"]["schema"]["const"],
+        REGISTRY_SOURCE_SCHEMA
+    );
+    assert_eq!(
+        schema["$defs"]["registry_source"]["properties"]["descriptor_hash"]["$ref"],
+        "#/$defs/sha256"
+    );
     assert_eq!(
         schema["$defs"]["controller_safety"]["properties"]["schema"]["const"],
         CONTROLLER_SAFETY_SCHEMA
@@ -77,7 +87,7 @@ fn normative_schema_tracks_the_current_lock_contract() {
     for controller in value["controllers"].as_object().unwrap().values() {
         let safety = controller
             .get("safety")
-            .expect("v4 schema retains controller safety");
+            .expect("v5 schema retains controller safety");
         assert_eq!(safety["schema"], CONTROLLER_SAFETY_SCHEMA);
         for state in safety["states"].as_array().unwrap() {
             if let Some(timeout) = state.get("heartbeat_timeout_us") {
@@ -86,7 +96,7 @@ fn normative_schema_tracks_the_current_lock_contract() {
         }
         let build = controller
             .get("build")
-            .expect("v4 schema requires controller build inputs");
+            .expect("v5 schema requires controller build inputs");
         assert_eq!(build["schema"], CONTROLLER_BUILD_SCHEMA);
         assert!(build["flash_bytes"].as_u64().is_some_and(|bytes| bytes > 0));
         assert!(build["ram_bytes"].as_u64().is_some_and(|bytes| bytes > 0));

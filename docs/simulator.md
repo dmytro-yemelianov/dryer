@@ -24,15 +24,25 @@ VirtualClock ──► SimTransport ──► SimController ──► TraceLog
 
 - **VirtualClock**: monotonic `u64` ticks, advanced explicitly by the test
   driver. No wall clock anywhere (determinism is the point).
-- **Commands, not wire frames**: the simulator speaks typed heartbeat, heater,
-  homing, and move semantics plus an optional scheduled-command envelope. Events
-  record acceptance, rejection, execution, telemetry, endstops, safe-state entry,
-  reset, and latched faults — the §16 *semantics* without the §16.3 framing. The
-  wire codec becomes a later layer that must round-trip to these types.
+- **Typed commands plus a clock wire endpoint**: plant and queue behavior speaks
+  typed heartbeat, heater, homing, and move semantics plus an optional scheduled-
+  command envelope. A separate bounded `SimClockTransport` accepts the exact §16.5
+  type-3 frame, captures controller-domain receive/send ticks, and returns the exact
+  type-4 frame. Keeping that endpoint separate preserves microsecond event timing
+  without quantizing clock exchange timestamps to the plant's 1 ms integration step.
 - **SimTransport**: an in-memory duplex carrying a delivery tick, command, and
   optional execution tick, with configurable latency, jitter (seeded PRNG — the seed
   is part of the test, never ambient), loss, and duplication (§24.1). Link loss uses
   `drop_link`; controller reset is injected directly through `SimController::reset`.
+- **SimClockTransport**: a dependency-cycle-free wire test endpoint with independent
+  request/response latency, seeded jitter/loss/duplication, an explicitly bounded
+  response queue, and a checked integer controller clock anchored by host/controller
+  epochs plus signed rate offset. The host drives send and receive ticks explicitly;
+  the endpoint performs no wall-clock reads, OS I/O, or client session policy.
+- **SimClockCluster**: deterministic routing for multiple independent clock
+  endpoints. Controller identity stays in this transport layer, so sequence values
+  may be reused independently by each controller without changing the wire ABI;
+  link faults remain isolated per controller.
 - **SimController**: bounded command queue with reported capacity, fill level, and
   earliest/latest accepted timestamps (§16.4). `send_scheduled` commands are
   validated when they arrive (transport latency consumes lead time), rejected when
@@ -55,7 +65,7 @@ VirtualClock ──► SimTransport ──► SimController ──► TraceLog
 ## Golden end-to-end test (the step-9 exit)
 
 ```text
-resolve(minimal-cartesian) → lock v4 → compile safety artifact
+resolve(minimal-cartesian) → lock v5 → compile safety artifact
 → job: [home X, heat to 60 °C, wait, move]
 → run simulator (fixed seed, fixed tick budget)
 → trace == examples/minimal-cartesian/job-trace.golden   (drift-gated in CI)
@@ -72,9 +82,9 @@ injection").
    1 ms quantum.
 2. Job vocabulary stays test-internal until the workflow system (§17) defines the
    real one.
-3. Multi-controller clock skew (§16.5) is deferred until a multi-controller fixture
-   and clock-synchronization protocol exist. The single-controller trace contract
-   must not guess those interfaces.
+3. The clock wire endpoint can model a controller-local epoch and rate, but a
+   multi-controller machine fixture and scheduling policy remain deferred. The
+   single-controller plant trace contract does not infer those interfaces.
 
 Compare two traces directly:
 

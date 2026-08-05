@@ -1,9 +1,10 @@
 //! `cargo run -p dryer-firmware-flash --example plan -- <machine.lock>
-//!   <packages-dir> <controller> <artifact> <expected-sha256>
+//!   <packages-dir> <controller> <build-plan.json> <artifact>
 //!   <expected-current-firmware> [--inventory devices.json]`
 //!
 //! Read-only: prints a dry-run plan and never opens or flashes a device.
 
+use dryer_firmware_build::ControllerBuildPlanArtifact;
 use dryer_firmware_flash::{
     discover_usb_devices, plan_dry_run, ArtifactSpec, DiscoveredUsbDevice, DryRunRequest,
 };
@@ -22,10 +23,10 @@ fn main() -> ExitCode {
     let Some(controller) = args.next() else {
         return usage();
     };
-    let Some(artifact_path) = args.next() else {
+    let Some(build_plan_path) = args.next() else {
         return usage();
     };
-    let Some(expected_sha256) = args.next() else {
+    let Some(artifact_path) = args.next() else {
         return usage();
     };
     let Some(expected_current_firmware) = args.next() else {
@@ -50,6 +51,14 @@ fn main() -> ExitCode {
         Ok(lock) => lock,
         Err(error) => return fail(format!("cannot parse {lock_path}: {error}")),
     };
+    let build_plan_text = match std::fs::read_to_string(&build_plan_path) {
+        Ok(text) => text,
+        Err(error) => return fail(format!("cannot read {build_plan_path}: {error}")),
+    };
+    let build_plan: ControllerBuildPlanArtifact = match serde_json::from_str(&build_plan_text) {
+        Ok(plan) => plan,
+        Err(error) => return fail(format!("cannot parse {build_plan_path}: {error}")),
+    };
     let registry = LocalRegistry::load(Path::new(&packages_path));
     if !registry.diagnostics.is_empty() {
         for diagnostic in &registry.diagnostics {
@@ -71,12 +80,11 @@ fn main() -> ExitCode {
     let request = DryRunRequest {
         controller: &controller,
         lock: &lock,
+        build_plan: &build_plan,
         registry: &registry,
         discovered_devices: &devices,
         artifact: ArtifactSpec {
             path: Path::new(&artifact_path),
-            plan_path: &artifact_path,
-            expected_sha256: &expected_sha256,
             signature: None,
         },
         expected_current_firmware: &expected_current_firmware,
@@ -102,8 +110,8 @@ fn read_inventory(path: &str) -> Result<Vec<DiscoveredUsbDevice>, String> {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: plan <machine.lock> <packages-dir> <controller> <artifact> \
-         <expected-sha256> <expected-current-firmware> [--inventory devices.json]"
+        "usage: plan <machine.lock> <packages-dir> <controller> <build-plan.json> \
+         <artifact> <expected-current-firmware> [--inventory devices.json]"
     );
     ExitCode::from(2)
 }

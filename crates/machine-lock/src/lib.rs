@@ -1,606 +1,33 @@
 //! `machine.lock` (spec §12, §29 step 7): a generated, canonical, hashed
 //! capture of one successful resolution.
 //!
-//! v0.4 field scope, stated honestly: exact package versions + portable
+//! v0.5 field scope, stated honestly: exact package versions + portable
 //! full-content digests (§6.6), manifest hashes, the machine-source hash,
-//! resolver identity, the pinned safety profile, and per-controller resolved
-//! resources plus compiled controller safety and firmware build inputs.
-//! Registry source identity and expected reproducible output hashes remain
-//! deferred.
+//! resolver and registry-source identity, the pinned safety profile, and
+//! per-controller resolved resources plus compiled controller safety and
+//! firmware build inputs. Reproducible output hashes are derived from this
+//! lock in build-plan v2 rather than inserted here, avoiding a lock/output
+//! hash cycle.
 //!
 //! Canonical form: JSON with every map a `BTreeMap`, so byte-identical
 //! lockfiles for identical inputs. The on-disk file is YAML for humans;
 //! `canonical_bytes`/`lock_hash` always use the JSON form.
 
-use dryer_machine_resolver::ResolvedGraph;
-use dryer_machine_schema::Diagnostic;
-use dryer_package_model::LocalRegistry;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+mod generate;
+mod model;
+mod validate;
+mod wire;
 
-pub const LOCK_VERSION: u32 = 4;
-pub const CONTROLLER_SAFETY_SCHEMA: &str = "dryer.controller-safety/v1";
-pub const CONTROLLER_BUILD_SCHEMA: &str = "dryer.controller-build-plan/v1";
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Lockfile {
-    pub lock_version: u32,
-    /// sha256 of the exact machine-manifest bytes that resolved.
-    pub machine_hash: String,
-    /// The resolver that produced this (crate version; §12 'resolver version').
-    pub resolver_version: String,
-    pub packages: Vec<LockedPackage>,
-    /// The safety profile the resolution validated against (§12 requires
-    /// the lock to pin the safety-profile version).
-    pub safety_profile: LockedPackage,
-    pub controllers: BTreeMap<String, LockedController>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockedPackage {
-    /// `namespace/name@version`.
-    pub id: String,
-    /// sha256 of the package's `package.yaml` bytes, retained for focused
-    /// manifest drift diagnostics.
-    pub manifest_hash: String,
-    /// Portable sha256 over every path and regular-file byte in the package.
-    /// Empty only when reading a legacy v1 lockfile.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub content_hash: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct LockedController {
-    pub board: String,
-    /// `component/via` → connector id on this controller.
-    pub resolved_resources: BTreeMap<String, String>,
-    /// Present and required in lockfile v3+; absent in legacy v1/v2 locks.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub safety: Option<LockedSafetyConfig>,
-    /// Present and required in lockfile v4+; absent in legacy v1-v3 locks.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub build: Option<LockedBuildConfig>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockedBuildConfig {
-    pub schema: String,
-    pub board: String,
-    pub chip: String,
-    pub target_triple: String,
-    pub toolchain: String,
-    pub build_profile: String,
-    pub protocol_version: String,
-    pub abi_version: String,
-    pub flash_bytes: u64,
-    pub ram_bytes: u64,
-    pub bootloader_offset_bytes: u64,
-    pub features: Vec<String>,
-    pub native_drivers: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockedSafetyConfig {
-    pub schema: String,
-    pub states: Vec<LockedSafeState>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockedSafeState {
-    pub component: String,
-    pub class: String,
-    /// Controller-local connector/resource id.
-    pub resource: String,
-    pub state: dryer_package_model::safety::SafeState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub heartbeat_timeout_us: Option<u64>,
-    /// Controller-local sensor resource when required by policy.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sensor: Option<String>,
-}
-
-#[derive(Serialize)]
-struct LockfileRef<'a> {
-    lock_version: u32,
-    machine_hash: &'a str,
-    resolver_version: &'a str,
-    packages: &'a [LockedPackage],
-    safety_profile: &'a LockedPackage,
-    controllers: &'a BTreeMap<String, LockedController>,
-}
-
-#[derive(Deserialize)]
-struct LockfileOwned {
-    lock_version: u32,
-    machine_hash: String,
-    resolver_version: String,
-    packages: Vec<LockedPackage>,
-    safety_profile: LockedPackage,
-    controllers: BTreeMap<String, LockedController>,
-}
-
-impl Serialize for Lockfile {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.validate().map_err(serde::ser::Error::custom)?;
-        LockfileRef {
-            lock_version: self.lock_version,
-            machine_hash: &self.machine_hash,
-            resolver_version: &self.resolver_version,
-            packages: &self.packages,
-            safety_profile: &self.safety_profile,
-            controllers: &self.controllers,
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Lockfile {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = LockfileOwned::deserialize(deserializer)?;
-        let lock = Self {
-            lock_version: wire.lock_version,
-            machine_hash: wire.machine_hash,
-            resolver_version: wire.resolver_version,
-            packages: wire.packages,
-            safety_profile: wire.safety_profile,
-            controllers: wire.controllers,
-        };
-        lock.validate().map_err(serde::de::Error::custom)?;
-        Ok(lock)
-    }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
-}
-
-/// Build a lockfile from a successful resolution.
-///
-/// `source` must be the exact manifest text that was resolved — the hash
-/// binds the lock to those bytes, so a reformatted manifest re-locks.
-pub fn lock(
-    source: &str,
-    registry: &LocalRegistry,
-    resolved: &ResolvedGraph,
-) -> Result<Lockfile, Vec<Diagnostic>> {
-    let parsed = dryer_machine_parser::parse_str(source);
-    let Some(doc) = parsed.doc else {
-        return Err(parsed.diagnostics);
-    };
-
-    // The lock pins the resolver's full closure — explicit pins, implicit
-    // roots and transitive dependencies — not merely the manifest's list.
-    let mut packages = Vec::new();
-    for pkg in &resolved.packages {
-        let Ok(r) = dryer_package_model::PackageRef::parse(pkg) else {
-            continue; // the resolver produced these; malformed would be its bug
-        };
-        let Some(found) = registry.find_version(&r.namespace, &r.name, &r.version) else {
-            return Err(vec![Diagnostic::error(
-                "E1402",
-                format!("resolved package '{pkg}' is no longer in the registry"),
-            )]);
-        };
-        let snapshot = found.snapshot().map_err(|e| {
-            vec![Diagnostic::error(
-                "E1400",
-                format!(
-                    "cannot snapshot package content for {}: {e}",
-                    found.reference
-                ),
-            )]
-        })?;
-        let manifest_bytes = snapshot.manifest_bytes().map_err(|e| {
-            vec![Diagnostic::error(
-                "E1400",
-                format!("cannot hash manifest for {}: {e}", found.reference),
-            )]
-        })?;
-        packages.push(LockedPackage {
-            id: found.reference.to_string(),
-            manifest_hash: sha256_hex(manifest_bytes),
-            content_hash: snapshot.content_hash(),
-        });
-    }
-    packages.sort_by(|a, b| a.id.cmp(&b.id));
-
-    let mut controllers: BTreeMap<String, LockedController> = doc
-        .controllers
-        .iter()
-        .map(|(name, c)| {
-            (
-                name.clone(),
-                LockedController {
-                    board: c.board.clone(),
-                    resolved_resources: BTreeMap::new(),
-                    safety: Some(LockedSafetyConfig {
-                        schema: CONTROLLER_SAFETY_SCHEMA.to_string(),
-                        states: Vec::new(),
-                    }),
-                    build: None,
-                },
-            )
-        })
-        .collect();
-    for (component, assignments) in &resolved.assignments {
-        for a in assignments {
-            let Some((ctrl, port)) = a.resource.0.split_once('.') else {
-                continue;
-            };
-            if let Some(entry) = controllers.get_mut(ctrl) {
-                // Keys stay terse: a search allocation's via carries its
-                // provenance suffix ("requires.connector (devices/x@1.0)");
-                // the lock keeps the mechanism, `explain` keeps the story.
-                let via_short = a.via.split_whitespace().next().unwrap_or(&a.via);
-                entry
-                    .resolved_resources
-                    .insert(format!("{component}/{via_short}"), port.to_string());
-            }
-        }
-    }
-    for (controller_name, bindings) in &resolved.controller_safety {
-        let Some(controller) = controllers.get_mut(controller_name) else {
-            return Err(vec![Diagnostic::error(
-                "E1403",
-                format!(
-                    "resolved safety configuration names unknown controller '{controller_name}'"
-                ),
-            )]);
-        };
-        let states = &mut controller
-            .safety
-            .as_mut()
-            .expect("v3 lock construction initializes safety")
-            .states;
-        for binding in bindings {
-            let Some((resource_controller, resource)) = binding.resource.0.split_once('.') else {
-                return Err(vec![Diagnostic::error(
-                    "E1403",
-                    format!(
-                        "safety resource '{}' is not 'controller.resource'",
-                        binding.resource.0
-                    ),
-                )]);
-            };
-            if resource_controller != controller_name {
-                return Err(vec![Diagnostic::error(
-                    "E1403",
-                    format!(
-                        "safety resource '{}' belongs to controller '{resource_controller}', not '{controller_name}'",
-                        binding.resource.0,
-                    ),
-                )]);
-            }
-            let sensor = binding
-                .sensor
-                .as_ref()
-                .map(|sensor| {
-                    sensor
-                        .0
-                        .strip_prefix(&format!("{controller_name}."))
-                        .map(str::to_string)
-                        .ok_or_else(|| {
-                            vec![Diagnostic::error(
-                                "E1403",
-                                format!(
-                                    "safety sensor '{}' is not local to controller '{controller_name}'",
-                                    sensor.0
-                                ),
-                            )]
-                        })
-                })
-                .transpose()?;
-            states.push(LockedSafeState {
-                component: binding.component.clone(),
-                class: binding.class.clone(),
-                resource: resource.to_string(),
-                state: binding.state,
-                heartbeat_timeout_us: binding.heartbeat_timeout_us,
-                sensor,
-            });
-        }
-        states.sort_by(|left, right| {
-            (&left.component, &left.resource).cmp(&(&right.component, &right.resource))
-        });
-    }
-    for (controller_name, plan) in &resolved.controller_build_plans {
-        let Some(controller) = controllers.get_mut(controller_name) else {
-            return Err(vec![Diagnostic::error(
-                "E1404",
-                format!("resolved build plan names unknown controller '{controller_name}'"),
-            )]);
-        };
-        controller.build = Some(LockedBuildConfig {
-            schema: CONTROLLER_BUILD_SCHEMA.to_string(),
-            board: plan.board.clone(),
-            chip: plan.chip.clone(),
-            target_triple: plan.target_triple.clone(),
-            toolchain: plan.toolchain.clone(),
-            build_profile: plan.build_profile.clone(),
-            protocol_version: plan.protocol_version.clone(),
-            abi_version: plan.abi_version.clone(),
-            flash_bytes: plan.flash_bytes,
-            ram_bytes: plan.ram_bytes,
-            bootloader_offset_bytes: plan.bootloader_offset_bytes,
-            features: plan.features.clone(),
-            native_drivers: plan.native_drivers.clone(),
-        });
-    }
-
-    // The safety profile is part of the closure; surface it as its own
-    // field too (§12 pins it visibly), at the closure-selected version.
-    let profile_prefix = format!("{}@", doc.safety.profile);
-    let safety_profile = packages
-        .iter()
-        .find(|p| p.id.starts_with(&profile_prefix))
-        .cloned()
-        .ok_or_else(|| {
-            vec![Diagnostic::error(
-                "E1401",
-                format!(
-                    "safety profile '{}' is not in the resolved closure",
-                    doc.safety.profile
-                ),
-            )]
-        })?;
-
-    let lockfile = Lockfile {
-        lock_version: LOCK_VERSION,
-        machine_hash: sha256_hex(source.as_bytes()),
-        resolver_version: env!("CARGO_PKG_VERSION").to_string(),
-        packages,
-        safety_profile,
-        controllers,
-    };
-    lockfile.validate().map_err(|error| {
-        vec![Diagnostic::error(
-            "E1405",
-            format!("generated lockfile violates its v{LOCK_VERSION} contract: {error}"),
-        )]
-    })?;
-    Ok(lockfile)
-}
-
-impl Lockfile {
-    /// Validate version-specific invariants before downstream artifact work.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.lock_version >= 2 {
-            for (index, package) in self.packages.iter().enumerate() {
-                if package.content_hash.is_empty() {
-                    return Err(format!(
-                        "lockfile v{} package[{index}] '{}' has no content_hash",
-                        self.lock_version, package.id
-                    ));
-                }
-            }
-            if self.safety_profile.content_hash.is_empty() {
-                return Err(format!(
-                    "lockfile v{} safety_profile '{}' has no content_hash",
-                    self.lock_version, self.safety_profile.id
-                ));
-            }
-        }
-        if self.lock_version >= 3 {
-            for (name, controller) in &self.controllers {
-                let safety = controller.safety.as_ref().ok_or_else(|| {
-                    format!(
-                        "lockfile v{} controller '{name}' has no compiled safety configuration",
-                        self.lock_version
-                    )
-                })?;
-                if safety.schema != CONTROLLER_SAFETY_SCHEMA {
-                    return Err(format!(
-                        "lockfile v{} controller '{name}' safety schema '{}' is not '{}'",
-                        self.lock_version, safety.schema, CONTROLLER_SAFETY_SCHEMA
-                    ));
-                }
-                let resources: std::collections::BTreeSet<&str> = controller
-                    .resolved_resources
-                    .values()
-                    .map(String::as_str)
-                    .collect();
-                let mut resources_with_safety = std::collections::BTreeSet::new();
-                for state in &safety.states {
-                    if state.component.trim().is_empty()
-                        || state.component.trim() != state.component
-                        || state.class.trim().is_empty()
-                        || state.class.trim() != state.class
-                    {
-                        return Err(format!(
-                            "lockfile v{} controller '{name}' has an empty or padded safety component/class",
-                            self.lock_version
-                        ));
-                    }
-                    if !resources_with_safety.insert(state.resource.as_str()) {
-                        return Err(format!(
-                            "lockfile v{} controller '{name}' repeats safety state for physical resource '{}'",
-                            self.lock_version, state.resource
-                        ));
-                    }
-                    if !resources.contains(state.resource.as_str()) {
-                        return Err(format!(
-                            "lockfile v{} controller '{name}' safety resource '{}' is not resolved",
-                            self.lock_version, state.resource
-                        ));
-                    }
-                    if state
-                        .sensor
-                        .as_deref()
-                        .is_some_and(|sensor| !resources.contains(sensor))
-                    {
-                        return Err(format!(
-                            "lockfile v{} controller '{name}' safety sensor '{}' is not resolved",
-                            self.lock_version,
-                            state.sensor.as_deref().unwrap_or_default()
-                        ));
-                    }
-                    if state.heartbeat_timeout_us == Some(0) {
-                        return Err(format!(
-                            "lockfile v{} controller '{name}' safety heartbeat timeout must be positive",
-                            self.lock_version
-                        ));
-                    }
-                }
-            }
-        }
-        if self.lock_version >= 4 {
-            let packages: std::collections::BTreeSet<&str> = self
-                .packages
-                .iter()
-                .map(|package| package.id.as_str())
-                .collect();
-            for (name, controller) in &self.controllers {
-                let build = controller.build.as_ref().ok_or_else(|| {
-                    format!(
-                        "lockfile v{} controller '{name}' has no compiled build configuration",
-                        self.lock_version
-                    )
-                })?;
-                if build.schema != CONTROLLER_BUILD_SCHEMA {
-                    return Err(format!(
-                        "lockfile v{} controller '{name}' build schema '{}' is not '{}'",
-                        self.lock_version, build.schema, CONTROLLER_BUILD_SCHEMA
-                    ));
-                }
-                if !build
-                    .board
-                    .strip_prefix(&controller.board)
-                    .is_some_and(|suffix| suffix.starts_with('@'))
-                {
-                    return Err(format!(
-                        "lockfile v{} controller '{name}' build board '{}' does not pin '{}'",
-                        self.lock_version, build.board, controller.board
-                    ));
-                }
-                for package in std::iter::once(build.board.as_str())
-                    .chain(std::iter::once(build.chip.as_str()))
-                    .chain(build.native_drivers.iter().map(String::as_str))
-                {
-                    if !packages.contains(package) {
-                        return Err(format!(
-                            "lockfile v{} controller '{name}' build input '{package}' is not in packages",
-                            self.lock_version
-                        ));
-                    }
-                }
-                for (field, value) in [
-                    ("target_triple", build.target_triple.as_str()),
-                    ("toolchain", build.toolchain.as_str()),
-                    ("build_profile", build.build_profile.as_str()),
-                    ("protocol_version", build.protocol_version.as_str()),
-                    ("abi_version", build.abi_version.as_str()),
-                ] {
-                    if value.is_empty() || value.trim() != value {
-                        return Err(format!(
-                            "lockfile v{} controller '{name}' build {field} is empty or padded",
-                            self.lock_version
-                        ));
-                    }
-                }
-                for (field, value) in [
-                    ("protocol_version", build.protocol_version.as_str()),
-                    ("abi_version", build.abi_version.as_str()),
-                ] {
-                    if !versioned_interface(value) {
-                        return Err(format!(
-                            "lockfile v{} controller '{name}' build {field} is not a versioned interface",
-                            self.lock_version
-                        ));
-                    }
-                }
-                if build.flash_bytes == 0
-                    || build.ram_bytes == 0
-                    || build.bootloader_offset_bytes >= build.flash_bytes
-                {
-                    return Err(format!(
-                        "lockfile v{} controller '{name}' has invalid build memory layout",
-                        self.lock_version
-                    ));
-                }
-                for (field, values) in [
-                    ("features", &build.features),
-                    ("native_drivers", &build.native_drivers),
-                ] {
-                    if values.windows(2).any(|pair| pair[0] >= pair[1]) {
-                        return Err(format!(
-                            "lockfile v{} controller '{name}' build {field} must be sorted and unique",
-                            self.lock_version
-                        ));
-                    }
-                }
-                if build
-                    .features
-                    .iter()
-                    .any(|feature| !dryer_machine_schema::valid_identifier(feature))
-                {
-                    return Err(format!(
-                        "lockfile v{} controller '{name}' build features contain an invalid identifier",
-                        self.lock_version
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Canonical bytes: deterministic JSON. The hash of a lockfile is the
-    /// hash of these bytes regardless of how the YAML file was formatted.
-    pub fn try_canonical_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
-        serde_json::to_vec(self)
-    }
-
-    /// Infallible convenience wrapper for already validated lockfiles.
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        self.try_canonical_bytes().expect("lockfile serializes")
-    }
-
-    /// Fallible lock hash for callers handling untrusted or mutated lock data.
-    pub fn try_lock_hash(&self) -> Result<String, serde_json::Error> {
-        self.try_canonical_bytes().map(|bytes| sha256_hex(&bytes))
-    }
-
-    /// Infallible convenience wrapper for already validated lockfiles.
-    pub fn lock_hash(&self) -> String {
-        self.try_lock_hash().expect("lockfile serializes")
-    }
-
-    /// The human-facing on-disk form (`machine.lock`).
-    pub fn try_to_yaml(&self) -> Result<String, serde_yaml::Error> {
-        serde_yaml::to_string(self)
-    }
-
-    /// Infallible convenience wrapper for already validated lockfiles.
-    pub fn to_yaml(&self) -> String {
-        self.try_to_yaml().expect("lockfile serializes")
-    }
-
-    pub fn from_yaml(text: &str) -> Result<Self, serde_yaml::Error> {
-        serde_yaml::from_str(text)
-    }
-}
-
-fn versioned_interface(value: &str) -> bool {
-    value.split_once("/v").is_some_and(|(name, version)| {
-        !name.is_empty()
-            && name
-                .chars()
-                .all(|character| character.is_ascii_lowercase() || character == '.')
-            && matches!(version.as_bytes().first(), Some(b'1'..=b'9'))
-            && version.bytes().all(|digit| digit.is_ascii_digit())
-            && version.parse::<u32>().is_ok()
-    })
-}
+pub use generate::lock;
+pub use model::{
+    LockedBuildConfig, LockedController, LockedPackage, LockedSafeState, LockedSafetyConfig,
+    Lockfile, CONTROLLER_BUILD_SCHEMA, CONTROLLER_SAFETY_SCHEMA, LOCK_VERSION,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dryer_package_model::LocalRegistry;
     use std::path::Path;
 
     fn setup() -> (String, LocalRegistry) {
@@ -635,6 +62,18 @@ mod tests {
             .resolved
             .unwrap();
         let l = lock(&source, &registry, &resolved).unwrap();
+        let registry_source = l.registry_source.as_ref().expect("v5 registry source");
+        assert_eq!(
+            registry_source.schema,
+            dryer_package_model::REGISTRY_SOURCE_SCHEMA
+        );
+        assert_eq!(registry_source.id, "dryer-official");
+        assert_eq!(
+            registry_source.uri,
+            "git+https://github.com/dmytro-yemelianov/dryer.git?subdir=packages"
+        );
+        assert!(registry_source.descriptor_hash.starts_with("sha256:"));
+        registry_source.validate().unwrap();
         let main = &l.controllers["mainboard"];
         assert_eq!(main.resolved_resources["x_driver/connected_to"], "motor0");
         assert_eq!(main.resolved_resources["hotend_heater/output"], "heater0");
@@ -700,6 +139,7 @@ mod tests {
             .unwrap();
         let mut legacy = lock(&source, &registry, &resolved).unwrap();
         legacy.lock_version = 1;
+        legacy.registry_source = None;
         for package in &mut legacy.packages {
             package.content_hash.clear();
         }
@@ -715,6 +155,7 @@ mod tests {
             .iter()
             .all(|package| package.content_hash.is_empty()));
         assert!(parsed.safety_profile.content_hash.is_empty());
+        assert!(parsed.registry_source.is_none());
         assert!(parsed
             .controllers
             .values()
@@ -729,12 +170,14 @@ mod tests {
             .unwrap();
         let mut legacy = lock(&source, &registry, &resolved).unwrap();
         legacy.lock_version = 2;
+        legacy.registry_source = None;
         for controller in legacy.controllers.values_mut() {
             controller.safety = None;
             controller.build = None;
         }
         let parsed = Lockfile::from_yaml(&legacy.to_yaml()).unwrap();
         assert_eq!(parsed.lock_version, 2);
+        assert!(parsed.registry_source.is_none());
         assert!(parsed
             .controllers
             .values()
@@ -749,15 +192,36 @@ mod tests {
             .unwrap();
         let mut legacy = lock(&source, &registry, &resolved).unwrap();
         legacy.lock_version = 3;
+        legacy.registry_source = None;
         for controller in legacy.controllers.values_mut() {
             controller.build = None;
         }
         let parsed = Lockfile::from_yaml(&legacy.to_yaml()).unwrap();
         assert_eq!(parsed.lock_version, 3);
+        assert!(parsed.registry_source.is_none());
         assert!(parsed
             .controllers
             .values()
             .all(|controller| controller.safety.is_some() && controller.build.is_none()));
+    }
+
+    #[test]
+    fn legacy_v4_locks_without_registry_identity_still_parse() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let mut legacy = lock(&source, &registry, &resolved).unwrap();
+        legacy.lock_version = 4;
+        legacy.registry_source = None;
+
+        let parsed = Lockfile::from_yaml(&legacy.to_yaml()).unwrap();
+        assert_eq!(parsed.lock_version, 4);
+        assert!(parsed.registry_source.is_none());
+        assert!(parsed
+            .controllers
+            .values()
+            .all(|controller| { controller.safety.is_some() && controller.build.is_some() }));
     }
 
     #[test]
@@ -921,6 +385,47 @@ mod tests {
             .features = vec!["not valid".to_string()];
         let error = serde_yaml::to_string(&invalid_feature).unwrap_err();
         assert!(error.to_string().contains("invalid identifier"), "{error}");
+    }
+
+    #[test]
+    fn v5_locks_require_a_valid_registry_source_identity() {
+        let (source, registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        let valid = lock(&source, &registry, &resolved).unwrap();
+
+        let mut missing = valid.clone();
+        missing.registry_source = None;
+        let error = serde_yaml::to_string(&missing).unwrap_err();
+        assert!(
+            error.to_string().contains("no registry source identity"),
+            "{error}"
+        );
+
+        let mut malformed = valid;
+        malformed.registry_source.as_mut().unwrap().uri =
+            "file:///Users/example/packages".to_string();
+        let error = serde_yaml::to_string(&malformed).unwrap_err();
+        assert!(
+            error.to_string().contains("portable absolute URI"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn lock_creation_rejects_a_registry_without_portable_identity() {
+        let (source, mut registry) = setup();
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap();
+        registry.source = None;
+
+        let diagnostics = lock(&source, &registry, &resolved).unwrap_err();
+        assert_eq!(diagnostics[0].code, "E1406");
+        assert!(diagnostics[0]
+            .message
+            .contains("no validated portable source descriptor"));
     }
 
     #[test]

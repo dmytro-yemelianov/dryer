@@ -1,0 +1,10 @@
+[package]
+name = "dryer-clock-sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded integer-only host/controller clock synchronization for Dryer"
+
+[dependencies]

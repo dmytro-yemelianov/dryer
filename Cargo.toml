@@ -8,6 +8,9 @@ members = [
     "crates/machine-resolver",
     "crates/machine-lock",
     "crates/firmware-build",
+    "crates/control-protocol",
+    "crates/control-client",
+    "crates/clock-sync",
     "crates/simulator",
     "crates/firmware-flash",
 ]

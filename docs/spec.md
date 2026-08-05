@@ -1181,7 +1181,7 @@ Emergency stop
 
 ### 16.3 Message framing
 
-Every frame must contain:
+Every frame contains:
 
 ```text
 protocol version
@@ -1192,15 +1192,34 @@ payload
 checksum
 ```
 
-Use a serialization format suitable for embedded systems.
+The v1 Dryer command codec (`dryer.control/v1`) is a bounded custom
+fixed-layout encoding. All multi-byte integers are little-endian. The frame
+layout is:
 
-Preferred candidates:
+```text
+offset  size  field
+0       2     magic: 0x44 0x52 ("DR")
+2       1     protocol version: 1
+3       1     message type: 1 (command), 2 (queue status), 3 (clock request), or 4 (clock response)
+4       4     sequence number: u32
+8       2     payload length: u16
+10      N     payload
+10+N    4     CRC-32C (Castagnoli), little-endian
+```
 
-- postcard;
-- custom fixed-layout encoding;
-- defmt-compatible internal structures.
+CRC-32C covers bytes 2 through the end of the payload; the magic and checksum
+are excluded. Command payloads begin with an envelope-flags byte (bit 0 marks
+an optional `execute_at: u64` timestamp; all other bits are reserved), then a
+command tag: `0` heartbeat, `1` heater target, `2` home, or `3` move. Strings
+are a one-byte UTF-8 length followed by bytes and are limited to 63 bytes.
+Payloads are limited to 128 bytes and complete frames to 142 bytes.
 
-Do not use JSON in the real-time control channel.
+The v1 codec rejects unsupported versions/types, unknown flags/tags, malformed
+lengths, invalid UTF-8, and checksum failures in a deterministic order. It is
+transport-independent, allocation-free on encode, and does not use JSON in the
+real-time control channel. The reference implementation and byte-level vectors
+live in `crates/control-protocol`; simulator behavior continues to operate on
+typed commands and uses the codec only for compatibility tests.
 
 ### 16.4 Buffer management
 
@@ -1211,6 +1230,27 @@ Controllers must report:
 - earliest accepted timestamp;
 - latest accepted timestamp;
 - underrun state.
+
+In `dryer.control/v1`, a controller reports this state with message type `2`
+(`queue status`) using the §16.3 frame envelope. Its payload is exactly 22
+bytes; all multi-byte integers are little-endian:
+
+```text
+offset  size  field
+0       1     flags: 0 (all bits reserved)
+1       2     queue capacity: u16
+3       2     queue fill level: u16
+5       8     earliest accepted timestamp: u64 ticks
+13      8     latest accepted timestamp: u64 ticks
+21      1     state flags: bit 0 underrun; bits 1–7 reserved and zero
+```
+
+The response reuses the frame sequence field as a `u32`. Decoders apply the
+same prefix/header/version/type/bounds/exact-frame-length/checksum ordering as
+command frames, then require the exact payload length before validating the
+payload flags and state flags. Unknown reserved bits are invalid. The v1 wire
+codec does not infer additional relationships among the reported numeric
+values; controller and host scheduling policy enforce those relationships.
 
 The host must maintain a configurable scheduling horizon.
 
@@ -1223,6 +1263,29 @@ maximum horizon: 1000 ms
 ```
 
 ### 16.5 Clock synchronization
+
+Clock exchanges use the same frame envelope. A type `3` request has a one-byte
+reserved-flags payload, which must be zero. A type `4` response has a 17-byte
+payload:
+
+```text
+offset  size  field
+0       1     flags: 0 (reserved)
+1       8     controller receive timestamp: u64 ticks (t2)
+9       8     controller send timestamp: u64 ticks (t3)
+```
+
+The response sequence must exactly echo the request sequence. The host owns
+t1 (send immediately before transport handoff) and t4 (receive immediately
+after complete frame receipt), then joins t1/t2/t3/t4 by sequence for the
+clock estimator. The wire codec only validates and transports t2/t3; it does
+not match outstanding exchanges or construct estimator samples.
+
+The host session layer owns one outstanding sequence at a time. It captures t1
+immediately before request handoff, captures t4 immediately after complete
+response receipt, rejects unsolicited or mismatched sequences, and passes the
+joined sample to the bounded estimator. Timeout and retry policy remain with
+the transport event loop.
 
 Implement:
 
