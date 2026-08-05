@@ -1,6 +1,8 @@
 use dryer_control_protocol::{
-    decode_command, encode_command, Command, CommandEnvelope, CommandFrame, DecodeError,
-    EncodeError, CHECKSUM_LEN, HEADER_LEN, MAX_FRAME_LEN, MAX_PAYLOAD_LEN, MAX_STRING_LEN,
+    decode_command, decode_queue_status, encode_command, encode_queue_status, Command,
+    CommandEnvelope, CommandFrame, DecodeError, EncodeError, QueueStatus, QueueStatusFrame,
+    CHECKSUM_LEN, HEADER_LEN, MAX_FRAME_LEN, MAX_PAYLOAD_LEN, MAX_STRING_LEN,
+    QUEUE_STATUS_FRAME_LEN, QUEUE_STATUS_MESSAGE_TYPE, QUEUE_STATUS_PAYLOAD_LEN,
 };
 
 const HEARTBEAT_GOLDEN: &[u8] = &[
@@ -24,6 +26,12 @@ const MOVE_GOLDEN: &[u8] = &[
     0xd4, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x57, 0xd6, 0x5e,
 ];
 
+const QUEUE_STATUS_GOLDEN: &[u8] = &[
+    0x44, 0x52, 0x01, 0x02, 0x0d, 0x0c, 0x0b, 0x0a, 0x16, 0x00, 0x00, 0x00, 0x04, 0x2a, 0x00, 0x08,
+    0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x01,
+    0x4b, 0x2f, 0x8c, 0x44,
+];
+
 fn frame(sequence: u32, execute_at: Option<u64>, command: Command) -> CommandFrame {
     CommandFrame {
         sequence,
@@ -40,6 +48,12 @@ fn encoded(frame: &CommandFrame) -> Vec<u8> {
     output[..length].to_vec()
 }
 
+fn encoded_queue_status(frame: &QueueStatusFrame) -> Vec<u8> {
+    let mut output = [0xa5; QUEUE_STATUS_FRAME_LEN];
+    let length = encode_queue_status(frame, &mut output).expect("queue status encodes");
+    output[..length].to_vec()
+}
+
 fn crc32c(bytes: &[u8]) -> u32 {
     let mut crc = !0_u32;
     for &byte in bytes {
@@ -53,16 +67,202 @@ fn crc32c(bytes: &[u8]) -> u32 {
 }
 
 fn raw_frame(payload: &[u8]) -> Vec<u8> {
+    raw_typed_frame(1, payload)
+}
+
+fn raw_typed_frame(message_type: u8, payload: &[u8]) -> Vec<u8> {
     assert!(payload.len() <= MAX_PAYLOAD_LEN);
     let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len() + CHECKSUM_LEN);
     bytes.extend_from_slice(b"DR");
-    bytes.extend_from_slice(&[1, 1]);
+    bytes.extend_from_slice(&[1, message_type]);
     bytes.extend_from_slice(&0_u32.to_le_bytes());
     bytes.extend_from_slice(&(payload.len() as u16).to_le_bytes());
     bytes.extend_from_slice(payload);
     let checksum = crc32c(&bytes[2..]);
     bytes.extend_from_slice(&checksum.to_le_bytes());
     bytes
+}
+
+#[test]
+fn queue_status_has_a_stable_v1_byte_golden() {
+    let expected = QueueStatusFrame {
+        sequence: 0x0a0b_0c0d,
+        status: QueueStatus {
+            capacity: 1024,
+            fill: 42,
+            earliest_accepted: 0x0102_0304_0506_0708,
+            latest_accepted: 0x1112_1314_1516_1718,
+            underrun: true,
+        },
+    };
+
+    assert_eq!(QUEUE_STATUS_PAYLOAD_LEN, 22);
+    assert_eq!(QUEUE_STATUS_FRAME_LEN, 36);
+    assert_eq!(encoded_queue_status(&expected), QUEUE_STATUS_GOLDEN);
+    assert_eq!(decode_queue_status(QUEUE_STATUS_GOLDEN), Ok(expected));
+}
+
+#[test]
+fn queue_status_numeric_and_buffer_boundaries_are_exact() {
+    for expected in [
+        QueueStatusFrame {
+            sequence: 0,
+            status: QueueStatus {
+                capacity: 0,
+                fill: 0,
+                earliest_accepted: 0,
+                latest_accepted: 0,
+                underrun: false,
+            },
+        },
+        QueueStatusFrame {
+            sequence: u32::MAX,
+            status: QueueStatus {
+                capacity: u16::MAX,
+                fill: u16::MAX,
+                earliest_accepted: u64::MAX,
+                latest_accepted: u64::MAX,
+                underrun: true,
+            },
+        },
+    ] {
+        assert_eq!(
+            decode_queue_status(&encoded_queue_status(&expected)),
+            Ok(expected)
+        );
+    }
+
+    let frame = QueueStatusFrame {
+        sequence: 1,
+        status: QueueStatus {
+            capacity: 1,
+            fill: 1,
+            earliest_accepted: 1,
+            latest_accepted: 1,
+            underrun: false,
+        },
+    };
+    let mut short = [0xa5; QUEUE_STATUS_FRAME_LEN - 1];
+    assert_eq!(
+        encode_queue_status(&frame, &mut short),
+        Err(EncodeError::BufferTooSmall {
+            needed: QUEUE_STATUS_FRAME_LEN,
+            available: QUEUE_STATUS_FRAME_LEN - 1,
+        })
+    );
+    assert!(short.iter().all(|byte| *byte == 0xa5));
+}
+
+#[test]
+fn every_queue_status_prefix_is_reported_as_truncated() {
+    for prefix_len in 0..QUEUE_STATUS_GOLDEN.len() {
+        assert!(
+            matches!(
+                decode_queue_status(&QUEUE_STATUS_GOLDEN[..prefix_len]),
+                Err(DecodeError::Truncated { .. })
+            ),
+            "prefix {prefix_len}/{} returned {:?}",
+            QUEUE_STATUS_GOLDEN.len(),
+            decode_queue_status(&QUEUE_STATUS_GOLDEN[..prefix_len])
+        );
+    }
+}
+
+#[test]
+fn queue_status_headers_follow_the_documented_validation_order() {
+    assert_eq!(
+        decode_queue_status(b"DX"),
+        Err(DecodeError::InvalidMagic { found: *b"DX" })
+    );
+
+    let mut header = [0_u8; HEADER_LEN];
+    header[..2].copy_from_slice(b"DR");
+    header[2] = 2;
+    header[3] = 99;
+    header[8..10].copy_from_slice(&u16::MAX.to_le_bytes());
+    assert_eq!(
+        decode_queue_status(&header),
+        Err(DecodeError::UnsupportedVersion { version: 2 })
+    );
+
+    header[2] = 1;
+    assert_eq!(
+        decode_queue_status(&header),
+        Err(DecodeError::UnsupportedMessageType { message_type: 99 })
+    );
+
+    header[3] = QUEUE_STATUS_MESSAGE_TYPE;
+    assert_eq!(
+        decode_queue_status(&header),
+        Err(DecodeError::PayloadTooLong {
+            length: usize::from(u16::MAX),
+            maximum: MAX_PAYLOAD_LEN,
+        })
+    );
+
+    let mut trailing = QUEUE_STATUS_GOLDEN.to_vec();
+    trailing.push(0);
+    trailing[HEADER_LEN] = 0xff;
+    assert_eq!(
+        decode_queue_status(&trailing),
+        Err(DecodeError::TrailingFrameBytes { count: 1 })
+    );
+}
+
+#[test]
+fn queue_status_rejects_wrong_type_checksum_length_and_reserved_bits() {
+    assert_eq!(
+        decode_queue_status(HEARTBEAT_GOLDEN),
+        Err(DecodeError::UnsupportedMessageType { message_type: 1 })
+    );
+
+    let mut corrupt = QUEUE_STATUS_GOLDEN.to_vec();
+    corrupt[14] ^= 0xff;
+    let computed = crc32c(&corrupt[2..corrupt.len() - CHECKSUM_LEN]);
+    assert_eq!(
+        decode_queue_status(&corrupt),
+        Err(DecodeError::ChecksumMismatch {
+            encoded: 0x448c_2f4b,
+            computed,
+        })
+    );
+
+    assert_eq!(
+        decode_queue_status(&raw_typed_frame(
+            QUEUE_STATUS_MESSAGE_TYPE,
+            &[0; QUEUE_STATUS_PAYLOAD_LEN - 1]
+        )),
+        Err(DecodeError::InvalidPayloadLength {
+            expected: QUEUE_STATUS_PAYLOAD_LEN,
+            actual: QUEUE_STATUS_PAYLOAD_LEN - 1,
+        })
+    );
+    assert_eq!(
+        decode_queue_status(&raw_typed_frame(
+            QUEUE_STATUS_MESSAGE_TYPE,
+            &[0; QUEUE_STATUS_PAYLOAD_LEN + 1]
+        )),
+        Err(DecodeError::InvalidPayloadLength {
+            expected: QUEUE_STATUS_PAYLOAD_LEN,
+            actual: QUEUE_STATUS_PAYLOAD_LEN + 1,
+        })
+    );
+
+    let mut flags = QUEUE_STATUS_GOLDEN.to_vec();
+    flags[HEADER_LEN] = 1;
+    refresh_checksum(&mut flags);
+    assert_eq!(
+        decode_queue_status(&flags),
+        Err(DecodeError::InvalidFlags { flags: 1 })
+    );
+
+    let mut state_flags = QUEUE_STATUS_GOLDEN.to_vec();
+    state_flags[HEADER_LEN + QUEUE_STATUS_PAYLOAD_LEN - 1] = 0x80;
+    refresh_checksum(&mut state_flags);
+    assert_eq!(
+        decode_queue_status(&state_flags),
+        Err(DecodeError::InvalidStateFlags { flags: 0x80 })
+    );
 }
 
 fn refresh_checksum(bytes: &mut [u8]) {

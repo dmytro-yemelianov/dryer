@@ -1200,7 +1200,7 @@ layout is:
 offset  size  field
 0       2     magic: 0x44 0x52 ("DR")
 2       1     protocol version: 1
-3       1     message type: 1 (command)
+3       1     message type: 1 (command) or 2 (queue status)
 4       4     sequence number: u32
 8       2     payload length: u16
 10      N     payload
@@ -1230,6 +1230,27 @@ Controllers must report:
 - earliest accepted timestamp;
 - latest accepted timestamp;
 - underrun state.
+
+In `dryer.control/v1`, a controller reports this state with message type `2`
+(`queue status`) using the §16.3 frame envelope. Its payload is exactly 22
+bytes; all multi-byte integers are little-endian:
+
+```text
+offset  size  field
+0       1     flags: 0 (all bits reserved)
+1       2     queue capacity: u16
+3       2     queue fill level: u16
+5       8     earliest accepted timestamp: u64 ticks
+13      8     latest accepted timestamp: u64 ticks
+21      1     state flags: bit 0 underrun; bits 1–7 reserved and zero
+```
+
+The response reuses the frame sequence field as a `u32`. Decoders apply the
+same prefix/header/version/type/bounds/exact-frame-length/checksum ordering as
+command frames, then require the exact payload length before validating the
+payload flags and state flags. Unknown reserved bits are invalid. The v1 wire
+codec does not infer additional relationships among the reported numeric
+values; controller and host scheduling policy enforce those relationships.
 
 The host must maintain a configurable scheduling horizon.
 

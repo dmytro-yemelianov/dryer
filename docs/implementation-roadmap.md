@@ -160,6 +160,12 @@ tests exist and pass, not that a type was declared.
   reusable bounded frame buffer, sequence rollover/error semantics, and a
   simulator sink adapter. It deliberately does not perform OS I/O, clock sync,
   motion planning, workflow execution, or receive/ack handling yet.
+  Slice 19 adds the protocol-only §16.4 queue-status response: message type `2`
+  reuses the `dryer.control/v1` envelope with an exact 22-byte payload carrying
+  `u16` capacity/fill, `u64` earliest/latest accepted controller ticks, and an
+  underrun state bit. Reserved bits, lengths, prefixes, and checksums are
+  strictly validated with byte-level goldens. Client receive handling and
+  simulator wire responses remain follow-up work.
 - [x] **10. Cross-platform flash discovery and dry-run plans** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies
