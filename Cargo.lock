@@ -81,6 +81,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dryer-clock-sync"
+version = "0.1.0"
+
+[[package]]
 name = "dryer-control-client"
 version = "0.1.0"
 dependencies = [

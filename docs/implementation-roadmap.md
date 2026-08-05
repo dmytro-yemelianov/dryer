@@ -164,8 +164,22 @@ tests exist and pass, not that a type was declared.
   reuses the `dryer.control/v1` envelope with an exact 22-byte payload carrying
   `u16` capacity/fill, `u64` earliest/latest accepted controller ticks, and an
   underrun state bit. Reserved bits, lengths, prefixes, and checksums are
-  strictly validated with byte-level goldens. Client receive handling and
-  simulator wire responses remain follow-up work.
+  strictly validated with byte-level goldens. Client receive handling exposes
+  that strict decoder without adding transport policy; simulator wire responses
+  remain follow-up work.
+  Slice 20 adds the transport-independent §16.5 clock estimator:
+  `dryer-clock-sync` consumes four-timestamp exchanges and widens offset intervals
+  around the host midpoint using the physically measured host exchange span plus
+  an explicit maximum relative-slew bound. It never subtracts controller processing
+  duration from host duration in the bounded path. The estimator derives
+  conservative signed drift bounds and projects checked integer-only
+  controller-time confidence windows using at least the configured drift envelope.
+  Host and controller ticks remain distinct clock domains already normalized to the
+  same one-microsecond resolution; the estimator does not perform unit conversion.
+  The standalone zero-slew observation helper retains its nominal
+  processing-excluded residual metric. The crate is allocation-free and `no_std`;
+  obtaining timestamps on a wire and applying queue/scheduling policy remain
+  separate follow-up boundaries.
 - [x] **10. Cross-platform flash discovery and dry-run plans** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies

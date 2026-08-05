@@ -10,6 +10,7 @@ members = [
     "crates/firmware-build",
     "crates/control-protocol",
     "crates/control-client",
+    "crates/clock-sync",
     "crates/simulator",
     "crates/firmware-flash",
 ]
