@@ -36,6 +36,11 @@ impl<'a> PackageSelection<'a> {
         if dryer_machine_schema::valid_package_ref_name(&doc.safety.profile) {
             implicit_roots.insert(doc.safety.profile.clone());
         }
+        for workflow in doc.workflows.values() {
+            if dryer_machine_schema::valid_package_ref_name(workflow.as_str()) {
+                implicit_roots.insert(workflow.as_str().to_string());
+            }
+        }
 
         let package_spans: BTreeMap<String, SpanIndex> = registry
             .packages

@@ -923,3 +923,15 @@ fn unpinned_safety_profile_name_with_invalid_chars_emits_e1500() {
     assert!(d.message.contains("must be 'namespace/name'"));
 }
 
+#[test]
+fn referenced_workflow_packages_are_included_in_resolution_closure() {
+    let with_workflow = format!("{}\nworkflows:\n  start: workflows/print-start\n", fixture());
+    let o = resolve_source(&with_workflow, &registry());
+    assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
+    let pkgs = o.resolved.unwrap().packages;
+    assert!(
+        pkgs.contains(&"workflows/print-start@1.0.0".to_string()),
+        "workflow package must resolve into package closure: {pkgs:?}"
+    );
+}
+
