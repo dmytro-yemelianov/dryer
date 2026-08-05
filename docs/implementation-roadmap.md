@@ -198,6 +198,11 @@ tests exist and pass, not that a type was declared.
   type-3/4 clock request/response frame exchanges. Workflow package resolution now
   includes declared machine workflows in the resolution package closure and validates
   invocation parameters against package schemas (`E1701`).
+  Slice 24 adds `MultiControllerClockSync` to `dryer-control-client`, enabling
+  event-driven clock sessions across multi-controller clusters (§16.5) with cluster-wide
+  synchronization status tracking. Resolver workflow validation now enforces capability
+  requirements (`E1702`), locked resource bindings (`E1703`), and workflow step action
+  calls (`E1704`).
 - [x] **10. Cross-platform flash discovery and dry-run plans** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies
