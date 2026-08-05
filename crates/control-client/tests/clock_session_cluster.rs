@@ -293,7 +293,9 @@ fn session_timeout_on_one_controller_does_not_block_the_other() {
             controller: 1,
             host_send: 1_000,
         };
-        let request = healthy_session.begin(&mut sink, &mut healthy_clock).unwrap();
+        let request = healthy_session
+            .begin(&mut sink, &mut healthy_clock)
+            .unwrap();
         let response = sink
             .cluster
             .receive_due(1, 1_000)
@@ -305,7 +307,9 @@ fn session_timeout_on_one_controller_does_not_block_the_other() {
         assert_eq!(request.sequence, 0);
         assert!(completed.estimate.is_none());
         sink.host_send = 2_000;
-        let request = healthy_session.begin(&mut sink, &mut healthy_clock).unwrap();
+        let request = healthy_session
+            .begin(&mut sink, &mut healthy_clock)
+            .unwrap();
         let response = sink
             .cluster
             .receive_due(1, 2_000)
@@ -359,12 +363,13 @@ fn session_timeout_on_one_controller_does_not_block_the_other() {
         };
         let request = flaky_session.begin(&mut sink, &mut flaky_clock).unwrap();
         assert_eq!(request.sequence, 1);
-        assert!(sink
-            .cluster
-            .receive_due(2, 2_000)
-            .unwrap()
-            .is_none());
-        assert_eq!(flaky_session.expire(HostTick(3_000)).map(|timeout| timeout.sequence), Some(1));
+        assert!(sink.cluster.receive_due(2, 2_000).unwrap().is_none());
+        assert_eq!(
+            flaky_session
+                .expire(HostTick(3_000))
+                .map(|timeout| timeout.sequence),
+            Some(1)
+        );
     }
 
     let _ = cluster.restore_link(2);
