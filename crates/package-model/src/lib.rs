@@ -718,6 +718,11 @@ mod tests {
         );
         assert!(source.descriptor_hash.starts_with("sha256:"));
         source.validate().unwrap();
+        let workflow = reg
+            .find("workflows", "print-start")
+            .expect("workflow fixture package");
+        assert_eq!(workflow.kind, PackageKind::Workflow);
+        assert_eq!(workflow.reference.to_string(), "workflows/print-start@1.0.0");
     }
 
     #[test]
