@@ -140,8 +140,8 @@ impl ClockSession {
         bytes: &[u8],
         clock: &mut C,
     ) -> Result<ClockExchangeReceipt, ClockSessionError<core::convert::Infallible>> {
-        let response = decode_clock_response_frame(bytes).map_err(ClockSessionError::Decode)?;
         let host_receive = clock.now();
+        let response = decode_clock_response_frame(bytes).map_err(ClockSessionError::Decode)?;
         let pending = self.pending.ok_or(ClockSessionError::NoPending)?;
         if response.sequence != pending.sequence {
             return Err(ClockSessionError::UnexpectedSequence {
@@ -161,12 +161,14 @@ impl ClockSession {
             controller_send: ControllerTick(response.response.controller_send),
             host_receive,
         };
+        // A matching response retires the outstanding exchange even when the
+        // estimator rejects its sample; callers must start a fresh exchange.
+        self.pending = None;
         let estimate = self
             .sync
             .push(sample)
             .map_err(ClockSessionError::Sync)?
             .copied();
-        self.pending = None;
         Ok(ClockExchangeReceipt {
             sequence: pending.sequence,
             sample,
@@ -416,6 +418,17 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct ScriptClock {
+        ticks: Vec<HostTick>,
+    }
+
+    impl HostClock for ScriptClock {
+        fn now(&mut self) -> HostTick {
+            self.ticks.remove(0)
+        }
+    }
+
     #[test]
     fn immediate_and_scheduled_commands_use_consecutive_sequences() {
         let mut client = CommandClient::with_initial_sequence(RecordingSink::default(), 41);
@@ -654,6 +667,59 @@ mod tests {
             })
         );
         assert_eq!(exchange.pending_sequence(), Some(0));
+    }
+
+    #[test]
+    fn clock_session_captures_receive_before_decode_and_keeps_pending_on_mismatch() {
+        let mut session = ClockSession::new(0, 100).expect("valid session");
+        let mut sink = RecordingSink::default();
+        let mut clock = ScriptClock {
+            ticks: vec![HostTick(10), HostTick(20)],
+        };
+        let request = session
+            .begin(&mut sink, &mut clock)
+            .expect("request begins");
+        assert_eq!(request.sequence, 0);
+        assert!(matches!(
+            session.accept_response(b"DX", &mut clock),
+            Err(ClockSessionError::Decode(DecodeError::InvalidMagic { .. }))
+        ));
+        assert_eq!(session.synchronizer().estimate(), None);
+        assert_eq!(session.expire(HostTick(109)), None);
+        assert_eq!(
+            session.expire(HostTick(110)),
+            Some(ClockTimeout { sequence: 0 })
+        );
+    }
+
+    #[test]
+    fn clock_session_retires_matching_sample_when_estimator_rejects_it() {
+        let mut session = ClockSession::new(0, 100).expect("valid session");
+        let mut sink = RecordingSink::default();
+        let mut clock = ScriptClock {
+            ticks: vec![HostTick(10), HostTick(20)],
+        };
+        let request = session
+            .begin(&mut sink, &mut clock)
+            .expect("request begins");
+        let response = ClockResponseFrame {
+            sequence: request.sequence,
+            response: ClockResponse {
+                controller_receive: 30,
+                controller_send: 20,
+            },
+        };
+        assert!(matches!(
+            session.accept_response(&encoded_clock_response(&response), &mut clock),
+            Err(ClockSessionError::Sync(ClockSyncError::ControllerRegressed))
+        ));
+        assert_eq!(session.expire(HostTick(100)), None);
+    }
+
+    fn encoded_clock_response(frame: &ClockResponseFrame) -> Vec<u8> {
+        let mut bytes = [0; CLOCK_RESPONSE_FRAME_LEN];
+        let length = encode_clock_response(frame, &mut bytes).expect("response encodes");
+        bytes[..length].to_vec()
     }
 
     #[test]
