@@ -1,4 +1,4 @@
-use dryer_clock_sync::HostTick;
+use dryer_clock_sync::{ControllerTick, HostTick};
 use dryer_control_client::{ClockSession, FrameSink, HostClock};
 use dryer_simulator::{
     ClockTransportConfig, ControllerClock, SimClockCluster, SimClockClusterError,
@@ -168,8 +168,14 @@ fn session_tracks_drift_per_controller_in_one_cluster() {
     let fast_estimate = fast_completed.estimate.unwrap();
     assert_eq!(fast_completed.sample.host_send, HostTick(3_000_000));
     assert_eq!(fast_completed.sample.host_receive, HostTick(3_000_000));
-    assert_eq!(fast_completed.sample.controller_receive, fast_clock.at(3_000_000).unwrap());
-    assert_eq!(fast_completed.sample.controller_send, fast_clock.at(3_000_000).unwrap());
+    assert_eq!(
+        fast_completed.sample.controller_receive,
+        ControllerTick(fast_clock.at(3_000_000).unwrap())
+    );
+    assert_eq!(
+        fast_completed.sample.controller_send,
+        ControllerTick(fast_clock.at(3_000_000).unwrap())
+    );
     assert_eq!(fast_estimate.drift.ppb, 1_000);
     assert_eq!(fast_estimate.drift.min_ppb, 1_000);
     assert_eq!(fast_estimate.drift.max_ppb, 1_000);
@@ -225,9 +231,12 @@ fn session_tracks_drift_per_controller_in_one_cluster() {
     assert_eq!(slow_completed.sample.host_receive, HostTick(3_000_000));
     assert_eq!(
         slow_completed.sample.controller_receive,
-        slow_clock.at(3_000_000).unwrap()
+        ControllerTick(slow_clock.at(3_000_000).unwrap())
     );
-    assert_eq!(slow_completed.sample.controller_send, slow_clock.at(3_000_000).unwrap());
+    assert_eq!(
+        slow_completed.sample.controller_send,
+        ControllerTick(slow_clock.at(3_000_000).unwrap())
+    );
     assert_eq!(slow_estimate.drift.ppb, -500);
     assert_eq!(slow_estimate.drift.min_ppb, -500);
     assert_eq!(slow_estimate.drift.max_ppb, -500);
@@ -295,9 +304,8 @@ fn session_timeout_on_one_controller_does_not_block_the_other() {
             .unwrap();
         assert_eq!(request.sequence, 0);
         assert!(completed.estimate.is_none());
-        let request = healthy_session
-            .begin(&mut sink, &mut healthy_clock)
-            .unwrap();
+        sink.host_send = 2_000;
+        let request = healthy_session.begin(&mut sink, &mut healthy_clock).unwrap();
         let response = sink
             .cluster
             .receive_due(1, 2_000)
@@ -311,8 +319,6 @@ fn session_timeout_on_one_controller_does_not_block_the_other() {
         completed
     };
     assert_eq!(healthy_receipt.sequence, 1);
-
-    cluster.drop_link(2).unwrap();
 
     let mut flaky_session = ClockSession::new(0, 1_000).unwrap();
     let mut flaky_clock = ScriptClock {
@@ -343,6 +349,8 @@ fn session_timeout_on_one_controller_does_not_block_the_other() {
         assert!(completed.estimate.is_none());
     }
 
+    cluster.drop_link(2).unwrap();
+
     {
         let mut sink = ClusterSink {
             cluster: &mut cluster,
@@ -359,7 +367,7 @@ fn session_timeout_on_one_controller_does_not_block_the_other() {
         assert_eq!(flaky_session.expire(HostTick(3_000)).map(|timeout| timeout.sequence), Some(1));
     }
 
-    cluster.restore_link(2);
+    let _ = cluster.restore_link(2);
 
     {
         let mut sink = ClusterSink {
