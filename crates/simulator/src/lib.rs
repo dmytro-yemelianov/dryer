@@ -500,6 +500,65 @@ impl SimController {
         self.queue_window = window;
     }
 
+    /// Process one incoming `dryer.control/v1` wire frame (§16).
+    ///
+    /// - `type-1` (command): decodes the envelope and schedules/executes it. Returns `Ok(None)`.
+    /// - `type-2` (queue status): returns an encoded `type-2` response carrying current status.
+    /// - `type-3` (clock request): returns an encoded `type-4` response with controller receive/send ticks.
+    pub fn process_wire_frame(&mut self, frame: &[u8]) -> Result<Option<Vec<u8>>, String> {
+        use dryer_control_protocol::*;
+
+        if frame.len() < 4 {
+            return Err("frame header too short".to_string());
+        }
+        let message_type = frame[3];
+        match message_type {
+            COMMAND_MESSAGE_TYPE => {
+                let cmd_frame = decode_command(frame)
+                    .map_err(|e| format!("decode command error: {e:?}"))?;
+                self.accept(cmd_frame.envelope);
+                Ok(None)
+            }
+            QUEUE_STATUS_MESSAGE_TYPE => {
+                let status_req = decode_queue_status(frame)
+                    .map_err(|e| format!("decode queue_status error: {e:?}"))?;
+                let status = self.queue_status();
+                let status_resp = QueueStatusFrame {
+                    sequence: status_req.sequence,
+                    status: QueueStatus {
+                        capacity: status.capacity as u16,
+                        fill: status.fill_level as u16,
+                        earliest_accepted: status.earliest_accepted_timestamp,
+                        latest_accepted: status.latest_accepted_timestamp,
+                        underrun: self.latched_fault.is_some(),
+                    },
+                };
+                let mut buf = vec![0u8; QUEUE_STATUS_FRAME_LEN];
+                let len = encode_queue_status(&status_resp, &mut buf)
+                    .map_err(|e| format!("encode queue_status error: {e:?}"))?;
+                buf.truncate(len);
+                Ok(Some(buf))
+            }
+            CLOCK_REQUEST_MESSAGE_TYPE => {
+                let clock_req = decode_clock_request(frame)
+                    .map_err(|e| format!("decode clock_request error: {e:?}"))?;
+                let clock_resp = ClockResponseFrame {
+                    sequence: clock_req.sequence,
+                    response: ClockResponse {
+                        controller_receive: self.now,
+                        controller_send: self.now,
+                    },
+                };
+                let mut buf = vec![0u8; CLOCK_RESPONSE_FRAME_LEN];
+                let len = encode_clock_response(&clock_resp, &mut buf)
+                    .map_err(|e| format!("encode clock_response error: {e:?}"))?;
+                buf.truncate(len);
+                Ok(Some(buf))
+            }
+            other => Err(format!("unsupported message type {other}")),
+        }
+    }
+
     /// Fault injection: controller reset — outputs enter their safe state,
     /// a fault latches, queue and targets clear (§18.1 boot/reset safety).
     pub fn reset(&mut self) {
@@ -1033,5 +1092,58 @@ mod tests {
         let json = report.to_pretty_json();
         let round_trip: ReplayReport = serde_json::from_str(&json).unwrap();
         assert_eq!(round_trip, report);
+    }
+
+    #[test]
+    fn process_wire_frame_handles_commands_queue_status_and_clock_requests() {
+        let mut sim = SimController::new(25_000, vec![hotend()], vec![]);
+
+        // 1. Send CommandFrame (Heartbeat)
+        let cmd_frame = dryer_control_protocol::CommandFrame {
+            sequence: 1,
+            envelope: dryer_control_protocol::CommandEnvelope {
+                execute_at: None,
+                command: dryer_control_protocol::Command::Heartbeat,
+            },
+        };
+        let mut buf = vec![0u8; dryer_control_protocol::MAX_FRAME_LEN];
+        let len = dryer_control_protocol::encode_command(&cmd_frame, &mut buf).unwrap();
+        buf.truncate(len);
+
+        let res = sim.process_wire_frame(&buf).unwrap();
+        assert!(res.is_none(), "command frame returns no direct byte response");
+
+        // 2. Send QueueStatus request frame (type 2)
+        let status_req = dryer_control_protocol::QueueStatusFrame {
+            sequence: 42,
+            status: dryer_control_protocol::QueueStatus {
+                capacity: 0,
+                fill: 0,
+                earliest_accepted: 0,
+                latest_accepted: 0,
+                underrun: false,
+            },
+        };
+        let mut req_buf = vec![0u8; dryer_control_protocol::QUEUE_STATUS_FRAME_LEN];
+        let len = dryer_control_protocol::encode_queue_status(&status_req, &mut req_buf).unwrap();
+        req_buf.truncate(len);
+
+        let status_resp_bytes = sim.process_wire_frame(&req_buf).unwrap().expect("status response");
+        let status_resp = dryer_control_protocol::decode_queue_status(&status_resp_bytes).unwrap();
+        assert_eq!(status_resp.sequence, 42);
+        assert_eq!(status_resp.status.capacity as usize, sim.queue_capacity);
+        assert_eq!(status_resp.status.fill, 0);
+
+        // 3. Send ClockRequestFrame (type 3)
+        let clock_req = dryer_control_protocol::ClockRequestFrame { sequence: 100 };
+        let mut clock_req_buf = vec![0u8; dryer_control_protocol::CLOCK_REQUEST_FRAME_LEN];
+        let len = dryer_control_protocol::encode_clock_request(&clock_req, &mut clock_req_buf).unwrap();
+        clock_req_buf.truncate(len);
+
+        let clock_resp_bytes = sim.process_wire_frame(&clock_req_buf).unwrap().expect("clock response");
+        let clock_resp = dryer_control_protocol::decode_clock_response(&clock_resp_bytes).unwrap();
+        assert_eq!(clock_resp.sequence, 100);
+        assert_eq!(clock_resp.response.controller_receive, sim.now);
+        assert_eq!(clock_resp.response.controller_send, sim.now);
     }
 }
