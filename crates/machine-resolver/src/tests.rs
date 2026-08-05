@@ -961,3 +961,69 @@ fn workflow_invocation_with_unknown_parameter_emits_e1701() {
     );
 }
 
+#[test]
+fn workflow_requiring_missing_capability_emits_e1702() {
+    let mut registry = registry();
+    let pkg = registry
+        .packages
+        .iter_mut()
+        .find(|p| p.reference.to_string() == "workflows/print-start@1.0.0")
+        .expect("print-start workflow package");
+    let source = std::fs::read_to_string(pkg.dir.join("package.yaml")).unwrap();
+    let replaced = source.replace("- heater.set_target", "- light.set_color");
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let temporary = std::env::temp_dir().join(format!("dryer-resolver-wf-cap-{nonce}"));
+    std::fs::create_dir_all(&temporary).unwrap();
+    std::fs::write(temporary.join("package.yaml"), replaced).unwrap();
+    pkg.dir = temporary.clone();
+
+    let with_workflow = format!("{}\nworkflows:\n  start: workflows/print-start\n", fixture());
+    let o = resolve_source(&with_workflow, &registry);
+    std::fs::remove_dir_all(temporary).unwrap();
+
+    assert!(!o.is_ok());
+    let d = o.diagnostics.iter().find(|d| d.code == "E1702").unwrap();
+    assert!(
+        d.message.contains("light.set_color") && d.message.contains("light"),
+        "{}",
+        d.message
+    );
+}
+
+#[test]
+fn workflow_with_unresolved_lock_resource_emits_e1703() {
+    let mut registry = registry();
+    let pkg = registry
+        .packages
+        .iter_mut()
+        .find(|p| p.reference.to_string() == "workflows/print-start@1.0.0")
+        .expect("print-start workflow package");
+    let source = std::fs::read_to_string(pkg.dir.join("package.yaml")).unwrap();
+    let replaced = source.replace("mainboard.heater0", "ghost_controller.ghost_resource");
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let temporary = std::env::temp_dir().join(format!("dryer-resolver-wf-lock-{nonce}"));
+    std::fs::create_dir_all(&temporary).unwrap();
+    std::fs::write(temporary.join("package.yaml"), replaced).unwrap();
+    pkg.dir = temporary.clone();
+
+    let with_workflow = format!("{}\nworkflows:\n  start: workflows/print-start\n", fixture());
+    let o = resolve_source(&with_workflow, &registry);
+    std::fs::remove_dir_all(temporary).unwrap();
+
+    assert!(!o.is_ok());
+    let d = o.diagnostics.iter().find(|d| d.code == "E1703").unwrap();
+    assert!(
+        d.message.contains("ghost_controller.ghost_resource"),
+        "{}",
+        d.message
+    );
+}
+

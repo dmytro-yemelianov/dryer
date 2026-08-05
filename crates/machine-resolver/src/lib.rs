@@ -220,7 +220,7 @@ fn resolve_doc(
     // controller so edge enforcement never depends on a host or link.
     phases_run.push(Phase::SafetyValidation);
     let safety_profile = safety::validate(doc, &resolved, &packages, diagnostics);
-    workflows::validate(doc, &packages, diagnostics);
+    workflows::validate(doc, &resolved, &packages, diagnostics);
 
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return fail(std::mem::take(diagnostics), phases_run.clone());
