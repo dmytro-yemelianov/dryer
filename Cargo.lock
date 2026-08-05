@@ -81,6 +81,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "dryer-cli"
+version = "0.1.0"
+dependencies = [
+ "dryer-control-client",
+ "dryer-control-protocol",
+ "dryer-firmware-build",
+ "dryer-firmware-flash",
+ "dryer-machine-lock",
+ "dryer-machine-parser",
+ "dryer-machine-resolver",
+ "dryer-machine-schema",
+ "dryer-package-model",
+ "dryer-simulator",
+ "dryer-toolpath-auditor",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dryer-clock-sync"
 version = "0.1.0"
 

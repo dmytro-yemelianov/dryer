@@ -1,0 +1,27 @@
+[package]
+name = "dryer-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Unified command-line interface for the Dryer modular machine control platform"
+
+[[bin]]
+name = "dryer"
+path = "src/main.rs"
+
+[dependencies]
+dryer-machine-schema = { path = "../machine-schema" }
+dryer-machine-parser = { path = "../machine-parser" }
+dryer-machine-resolver = { path = "../machine-resolver" }
+dryer-machine-lock = { path = "../machine-lock" }
+dryer-firmware-build = { path = "../firmware-build" }
+dryer-firmware-flash = { path = "../firmware-flash" }
+dryer-control-protocol = { path = "../control-protocol" }
+dryer-control-client = { path = "../control-client" }
+dryer-simulator = { path = "../simulator" }
+dryer-toolpath-auditor = { path = "../toolpath-auditor" }
+dryer-package-model = { path = "../package-model" }
+serde = { workspace = true }
+serde_json = { workspace = true }
