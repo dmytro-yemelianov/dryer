@@ -4,6 +4,8 @@
 //! once a command has encoded successfully, even if the transport rejects the
 //! resulting frame. Encoding failures do not consume a sequence number.
 
+extern crate alloc;
+
 use core::fmt;
 
 use dryer_clock_sync::ControllerTick;
@@ -190,6 +192,54 @@ impl ClockSession {
 
     pub fn synchronizer(&self) -> &ClockSync {
         &self.sync
+    }
+}
+
+/// Multi-controller clock synchronization state (§16.5).
+///
+/// Tracks independent `ClockSession` instances for each controller in a cluster,
+/// enabling coordinated multi-controller scheduling and cross-controller synchronization
+/// verification.
+#[derive(Debug)]
+pub struct MultiControllerClockSync {
+    sessions: alloc::collections::BTreeMap<alloc::string::String, ClockSession>,
+    max_slew_ppb: i128,
+    timeout_ticks: u64,
+}
+
+impl MultiControllerClockSync {
+    pub fn new(max_slew_ppb: i128, timeout_ticks: u64) -> Self {
+        Self {
+            sessions: alloc::collections::BTreeMap::new(),
+            max_slew_ppb,
+            timeout_ticks,
+        }
+    }
+
+    pub fn add_controller(&mut self, name: &str) -> Result<(), ClockSyncError> {
+        let session = ClockSession::new(self.max_slew_ppb, self.timeout_ticks)?;
+        self.sessions.insert(alloc::string::String::from(name), session);
+        Ok(())
+    }
+
+    pub fn session_mut(&mut self, name: &str) -> Option<&mut ClockSession> {
+        self.sessions.get_mut(name)
+    }
+
+    pub fn session(&self, name: &str) -> Option<&ClockSession> {
+        self.sessions.get(name)
+    }
+
+    pub fn is_cluster_synchronized(&self) -> bool {
+        !self.sessions.is_empty()
+            && self
+                .sessions
+                .values()
+                .all(|session| session.synchronizer().estimate().is_some())
+    }
+
+    pub fn controller_count(&self) -> usize {
+        self.sessions.len()
     }
 }
 
@@ -747,5 +797,102 @@ mod tests {
             decode_queue_status_frame(&encoded),
             Err(DecodeError::ChecksumMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn multi_controller_clock_sync_manages_multiple_controller_sessions() {
+        let mut cluster = MultiControllerClockSync::new(100_000, 5_000);
+        cluster.add_controller("mainboard").unwrap();
+        cluster.add_controller("toolboard").unwrap();
+
+        assert_eq!(cluster.controller_count(), 2);
+        assert!(!cluster.is_cluster_synchronized());
+
+        let mut sink1 = RecordingSink::default();
+        let mut sink2 = RecordingSink::default();
+        let mut clock1 = ScriptClock {
+            ticks: vec![HostTick(100), HostTick(200), HostTick(300), HostTick(400)],
+        };
+        let mut clock2 = ScriptClock {
+            ticks: vec![HostTick(150), HostTick(250), HostTick(350), HostTick(450)],
+        };
+
+        // Complete 2 exchanges for mainboard
+        let req1_1 = cluster
+            .session_mut("mainboard")
+            .unwrap()
+            .begin(&mut sink1, &mut clock1)
+            .unwrap();
+        let resp1_1 = ClockResponseFrame {
+            sequence: req1_1.sequence,
+            response: ClockResponse {
+                controller_receive: 120,
+                controller_send: 180,
+            },
+        };
+        cluster
+            .session_mut("mainboard")
+            .unwrap()
+            .accept_response(&encoded_clock_response(&resp1_1), &mut clock1)
+            .unwrap();
+
+        let req1_2 = cluster
+            .session_mut("mainboard")
+            .unwrap()
+            .begin(&mut sink1, &mut clock1)
+            .unwrap();
+        let resp1_2 = ClockResponseFrame {
+            sequence: req1_2.sequence,
+            response: ClockResponse {
+                controller_receive: 320,
+                controller_send: 380,
+            },
+        };
+        cluster
+            .session_mut("mainboard")
+            .unwrap()
+            .accept_response(&encoded_clock_response(&resp1_2), &mut clock1)
+            .unwrap();
+
+        assert!(!cluster.is_cluster_synchronized());
+
+        // Complete 2 exchanges for toolboard
+        let req2_1 = cluster
+            .session_mut("toolboard")
+            .unwrap()
+            .begin(&mut sink2, &mut clock2)
+            .unwrap();
+        let resp2_1 = ClockResponseFrame {
+            sequence: req2_1.sequence,
+            response: ClockResponse {
+                controller_receive: 170,
+                controller_send: 230,
+            },
+        };
+        cluster
+            .session_mut("toolboard")
+            .unwrap()
+            .accept_response(&encoded_clock_response(&resp2_1), &mut clock2)
+            .unwrap();
+
+        let req2_2 = cluster
+            .session_mut("toolboard")
+            .unwrap()
+            .begin(&mut sink2, &mut clock2)
+            .unwrap();
+        let resp2_2 = ClockResponseFrame {
+            sequence: req2_2.sequence,
+            response: ClockResponse {
+                controller_receive: 370,
+                controller_send: 430,
+            },
+        };
+        cluster
+            .session_mut("toolboard")
+            .unwrap()
+            .accept_response(&encoded_clock_response(&resp2_2), &mut clock2)
+            .unwrap();
+
+        assert!(cluster.is_cluster_synchronized());
     }
 }
