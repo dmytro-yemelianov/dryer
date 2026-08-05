@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dryer — Modular Machine Control Platform</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="index.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header Navbar -->
+    <header class="app-header glass-card">
+      <div class="brand">
+        <div class="logo-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>DRYER OS</h1>
+          <span class="subtext">Modular Control Platform</span>
+        </div>
+      </div>
+
+      <div class="status-pills">
+        <div class="pill pill-success" id="connectionPill">
+          <span class="dot"></span>
+          <span class="label">SIMULATOR ONLINE</span>
+        </div>
+        <div class="pill pill-info" id="clockSyncPill">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+          </svg>
+          <span class="label" id="clockSyncLabel">Clock Sync: ±0.3 µs</span>
+        </div>
+        <div class="pill pill-neutral" id="profilePill">
+          <span class="label">desktop-fdm@1.0.0</span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-danger" id="estopBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <rect x="3" y="3" width="18" height="18" rx="3"/>
+          </svg>
+          EMERGENCY STOP
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Workspace Grid -->
+    <main class="workspace-grid">
+      <!-- Left Column: Topology & Kinematics Control -->
+      <section class="column left-col">
+        <!-- Machine Graph Topology -->
+        <div class="card glass-card">
+          <div class="card-header">
+            <h3>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+              </svg>
+              Machine Topology Graph
+            </h3>
+            <span class="badge">4 Components</span>
+          </div>
+          <div class="card-body">
+            <div class="graph-tree">
+              <div class="tree-node controller-node">
+                <div class="node-icon">🎛️</div>
+                <div class="node-details">
+                  <span class="node-title">mainboard</span>
+                  <span class="node-meta">boards/example-mainboard @ 1209:d003</span>
+                </div>
+                <span class="node-status active">ACTIVE</span>
+              </div>
+              <div class="tree-children">
+                <div class="tree-node component-node">
+                  <div class="node-icon">⚡</div>
+                  <div class="node-details">
+                    <span class="node-title">x_driver</span>
+                    <span class="node-meta">devices/tmc2209 ➔ mainboard.motor0</span>
+                  </div>
+                  <span class="node-status">OK</span>
+                </div>
+                <div class="tree-node component-node">
+                  <div class="node-icon">⚡</div>
+                  <div class="node-details">
+                    <span class="node-title">y_driver</span>
+                    <span class="node-meta">devices/tmc2209 ➔ mainboard.motor1</span>
+                  </div>
+                  <span class="node-status">OK</span>
+                </div>
+                <div class="tree-node component-node">
+                  <div class="node-icon">🔥</div>
+                  <div class="node-details">
+                    <span class="node-title">hotend_heater</span>
+                    <span class="node-meta">heater ➔ mainboard.heater0</span>
+                  </div>
+                  <span class="node-status">OK</span>
+                </div>
+                <div class="tree-node component-node">
+                  <div class="node-icon">♨️</div>
+                  <div class="node-details">
+                    <span class="node-title">bed_heater</span>
+                    <span class="node-meta">heater ➔ mainboard.bed0</span>
+                  </div>
+                  <span class="node-status">OK</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Axis & Motion Control Panel -->
+        <div class="card glass-card">
+          <div class="card-header">
+            <h3>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M5 9l4-4 4 4M5 15l4 4 4-4M19 9l-4-4-4 4M19 15l-4 4-4-4"/>
+              </svg>
+              Axis & Motion Control
+            </h3>
+            <button class="btn btn-secondary btn-sm" id="homeAllBtn">HOME ALL (G28)</button>
+          </div>
+          <div class="card-body">
+            <div class="axes-grid">
+              <div class="axis-box">
+                <div class="axis-info">
+                  <span class="axis-label">X AXIS</span>
+                  <span class="axis-value" id="xVal">50.0 mm</span>
+                </div>
+                <input type="range" id="xSlider" min="0" max="200" value="50" step="0.5">
+                <div class="axis-actions">
+                  <button class="btn btn-ghost btn-xs home-x" id="homeXBtn">Home X</button>
+                </div>
+              </div>
+              <div class="axis-box">
+                <div class="axis-info">
+                  <span class="axis-label">Y AXIS</span>
+                  <span class="axis-value" id="yVal">20.0 mm</span>
+                </div>
+                <input type="range" id="ySlider" min="0" max="200" value="20" step="0.5">
+                <div class="axis-actions">
+                  <button class="btn btn-ghost btn-xs home-y" id="homeYBtn">Home Y</button>
+                </div>
+              </div>
+              <div class="axis-box">
+                <div class="axis-info">
+                  <span class="axis-label">Z AXIS</span>
+                  <span class="axis-value" id="zVal">10.0 mm</span>
+                </div>
+                <input type="range" id="zSlider" min="0" max="200" value="10" step="0.5">
+                <div class="axis-actions">
+                  <button class="btn btn-ghost btn-xs home-z" id="homeZBtn">Home Z</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Center/Right Column: Thermal Real-Time Telemetry & Pre-Flight Job Auditor -->
+      <section class="column right-col">
+        <!-- Thermal Telemetry Canvas Chart -->
+        <div class="card glass-card">
+          <div class="card-header">
+            <h3>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 20V10M12 20V4M6 20v-6"/>
+              </svg>
+              Thermal Real-Time Telemetry
+            </h3>
+            <div class="thermal-legend">
+              <span class="legend-item hotend"><span class="legend-dot"></span> Hotend (<span id="hotendTargetLabel">210</span>°C)</span>
+              <span class="legend-item bed"><span class="legend-dot"></span> Bed (<span id="bedTargetLabel">60</span>°C)</span>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="chart-container">
+              <canvas id="thermalChart" width="700" height="220"></canvas>
+            </div>
+            <div class="heater-controls-grid">
+              <div class="heater-input-card">
+                <span class="h-name">HOTEND HEATER</span>
+                <div class="h-input-group">
+                  <input type="number" id="hotendTarget" value="210" min="0" max="300">
+                  <span class="unit">°C</span>
+                  <button class="btn btn-primary btn-xs" id="setHotendBtn">Set</button>
+                  <button class="btn btn-ghost btn-xs" id="offHotendBtn">Off</button>
+                </div>
+              </div>
+              <div class="heater-input-card">
+                <span class="h-name">BED HEATER</span>
+                <div class="h-input-group">
+                  <input type="number" id="bedTarget" value="60" min="0" max="120">
+                  <span class="unit">°C</span>
+                  <button class="btn btn-primary btn-xs" id="setBedBtn">Set</button>
+                  <button class="btn btn-ghost btn-xs" id="offBedBtn">Off</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pre-Flight Toolpath Auditor & G-code Transpiler (Dry Integration) -->
+        <div class="card glass-card">
+          <div class="card-header">
+            <h3>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+                <polyline points="10 9 9 9 8 9"/>
+              </svg>
+              Pre-Flight Auditor & G-Code Job Streamer (Dry Engine)
+            </h3>
+            <div class="file-upload-wrapper">
+              <label for="gcodeFile" class="btn btn-secondary btn-sm">
+                📁 Load .gcode / .json
+              </label>
+              <input type="file" id="gcodeFile" accept=".gcode,.json,.txt" style="display: none;">
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="audit-summary-box" id="auditSummary">
+              <div class="audit-status-badge success" id="auditBadge">
+                <span class="icon" id="auditIcon">✅</span>
+                <span class="title" id="auditTitle">Pre-Flight Audit Passed (A000)</span>
+              </div>
+              <div class="audit-metrics">
+                <div class="metric">
+                  <span class="m-label">Commands Audited</span>
+                  <span class="m-val" id="cmdCount">8</span>
+                </div>
+                <div class="metric">
+                  <span class="m-label">Max Feed Rate</span>
+                  <span class="m-val" id="maxFeed">50,000 µm/s</span>
+                </div>
+                <div class="metric">
+                  <span class="m-label">Thermal Ceiling</span>
+                  <span class="m-val" id="thermalCeiling">300,000 mC</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Execution Console Trace -->
+            <div class="console-box">
+              <div class="console-header">
+                <span>SIMULATOR EXECUTION TRACE (JSON LINES)</span>
+                <button class="btn btn-ghost btn-xs" id="clearConsoleBtn">Clear</button>
+              </div>
+              <div class="console-log" id="consoleLog">
+                <div class="log-line info">[0.000s] Connected to Dryer Deterministic Simulator (1 µs virtual clock)</div>
+                <div class="log-line event">{"event":"accepted","at":0,"what":"set hotend_heater -> 210000 mC"}</div>
+                <div class="log-line event">{"event":"accepted","at":0,"what":"home x"}</div>
+                <div class="log-line event">{"event":"executed","at":1000,"what":"heater hotend_heater target 210000 mC"}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

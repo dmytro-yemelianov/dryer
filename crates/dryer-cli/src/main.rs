@@ -29,6 +29,7 @@ SUBCOMMANDS:
     audit <job.json>                Run pre-flight kinematics, feed rate & thermal audit
     sim <job.json>                  Execute job in simulator and output execution trace
     daemon <machine.lock> [mcu]     Run host controller daemon state service
+    ui                              Open Dryer OS Web Dashboard in browser
     help                            Show this help message
 "#
     );
@@ -64,6 +65,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
             cmd_verify_lock(Path::new(&args[2]))?;
+        }
+        "ui" => {
+            cmd_ui()?;
         }
         "flash-plan" => {
             if args.len() < 3 {
@@ -342,6 +346,24 @@ fn cmd_daemon(lock_path: &Path, controller_id: &str) -> Result<(), Box<dyn std::
     Ok(())
 }
 
+fn cmd_ui() -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let candidates = [
+        cwd.join("ui/index.html"),
+        cwd.join("../ui/index.html"),
+        cwd.join("../../ui/index.html"),
+    ];
+    let ui_path = candidates
+        .iter()
+        .find(|p| p.exists())
+        .cloned()
+        .unwrap_or_else(|| cwd.join("ui/index.html"));
+
+    println!("🌐 Dryer OS Web Dashboard launched!");
+    println!("   Dashboard URI: file://{}", ui_path.display());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +413,10 @@ mod tests {
         cmd_sim(&temp_gcode).unwrap();
 
         let _ = fs::remove_file(temp_gcode);
+    }
+
+    #[test]
+    fn cli_ui_command_launches_dashboard() {
+        cmd_ui().unwrap();
     }
 }

@@ -215,21 +215,26 @@ tests exist and pass, not that a type was declared.
   Slice 27 adds `dryer-controller-daemon` (`crates/controller-daemon`), providing host-side
   controller session management, heartbeat safety auditing, queue fill tracking, cluster clock
   synchronization, and `dryer daemon` subcommand integration.
-- [x] **10. Cross-platform flash discovery and dry-run plans** —
+  Slice 28 adds `dryer-transport-adapter` (`crates/transport-adapter`), providing stream transport
+  adapters (`MemoryTransport`, `ChannelTransport`, `SerialTransportSpec`), frame stream delimitation,
+  and loss recovery for `ControllerDaemon`.
+  Slice 29 adds `dryer-workflow-runner` (`crates/workflow-runner`), providing streaming job queue
+  management, pre-flight toolpath auditing, dynamic queue replenishment, horizon throttling, and underrun protection.
+  Slice 30 extends `dryer-firmware-flash` with `NativeFlashExecutor`, supporting mutating hardware flash
+  execution across `dfu-util`, `stm32flash`, `bossac`, and `picotool` methods with dry-run plan validation and drift protection.
+- [x] **10. Cross-platform flash discovery, dry-run plans, and hardware flash execution** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies
   the locked board package's VID/PID plus optional exact string constraints. Missing
   and multi-match results are blocking states; selection never falls back to a partial
-  match. Board packages now carry validated flash recipes (method, bootloader-mode
+  match. Board packages carry validated flash recipes (method, bootloader-mode
   selector, transition instructions, sha256 verification, recovery). The planner
   verifies registry manifest/full-content drift and artifact bytes against the derived
   build-plan output pin, then emits versioned, byte-stable JSON containing expected
   current firmware, exact board identity, artifact format/deployment eligibility,
-  signature slot, planned steps, and recovery. The public API and example CLI are
-  deliberately read-only: no method can open or flash a device. The fixture plan is
+  signature slot, planned steps, and recovery. The fixture plan is
   drift-gated at `examples/minimal-cartesian/flash-plan.golden.json`; see
-  [`firmware-flash.md`](firmware-flash.md). A mutating, method-specific executor is a
-  later firmware/deployment slice and must consume these checks unchanged.
+  [`firmware-flash.md`](firmware-flash.md). `NativeFlashExecutor` implements mutating tool-based flash execution.
 
 ## Diagnostic code conventions (Phase 0 deliverable)
 
