@@ -24,6 +24,7 @@ USAGE:
 SUBCOMMANDS:
     check <machine.yaml>            Parse, validate, and resolve a machine document
     lock <machine.yaml> [out.lock]  Generate canonical machine.lock file (v5 schema)
+    verify-lock <machine.lock>      Verify lockfile package content digests against disk
     flash-plan <machine.lock>       Discover USB devices and generate dry-run flash plan
     audit <job.json>                Run pre-flight kinematics, feed rate & thermal audit
     sim <job.json>                  Execute job in simulator and output execution trace
@@ -55,6 +56,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let out_path = args.get(3).map(PathBuf::from);
             cmd_lock(Path::new(&args[2]), out_path.as_deref())?;
+        }
+        "verify-lock" => {
+            if args.len() < 3 {
+                eprintln!("Error: missing <machine.lock> path");
+                std::process::exit(1);
+            }
+            cmd_verify_lock(Path::new(&args[2]))?;
         }
         "flash-plan" => {
             if args.len() < 3 {
@@ -155,6 +163,47 @@ fn cmd_lock(
     fs::write(&target_path, &lock_yaml)?;
     println!("✅ Canonical lockfile generated at '{:?}'", target_path);
     println!("   Lock hash: {}", lockfile.lock_hash());
+    Ok(())
+}
+
+fn cmd_verify_lock(lock_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let lock_bytes = fs::read_to_string(lock_path)?;
+    let lockfile = Lockfile::from_yaml(&lock_bytes)?;
+    let registry = find_registry();
+
+    println!("🔍 Verifying lockfile '{:?}'", lock_path);
+    println!("   Lock hash: {}", lockfile.lock_hash());
+
+    let mut mismatched = 0;
+    for locked_pkg in &lockfile.packages {
+        let pkg_ref_str = &locked_pkg.id;
+        let parsed_ref = dryer_package_model::PackageRef::parse(pkg_ref_str)
+            .map_err(|e| format!("invalid locked package ref '{pkg_ref_str}': {e}"))?;
+
+        if let Some(loaded_pkg) = registry.find(&parsed_ref.namespace, &parsed_ref.name) {
+            let disk_hash = loaded_pkg.content_hash().map_err(|e| e.to_string())?;
+            if disk_hash == locked_pkg.content_hash {
+                println!("   [OK] {} matches content digest {}", pkg_ref_str, locked_pkg.content_hash);
+            } else {
+                eprintln!(
+                    "   [DRIFT] {} content digest mismatch! Expected {}, found {}",
+                    pkg_ref_str, locked_pkg.content_hash, disk_hash
+                );
+                mismatched += 1;
+            }
+        } else {
+            eprintln!("   [MISSING] {} not found in local registry!", pkg_ref_str);
+            mismatched += 1;
+        }
+    }
+
+    if mismatched > 0 {
+        eprintln!("❌ Lockfile verification failed with {} package mismatches/drift.", mismatched);
+        std::process::exit(1);
+    } else {
+        println!("✅ Lockfile verification passed! All {} locked packages matched.", lockfile.packages.len());
+    }
+
     Ok(())
 }
 
@@ -285,6 +334,10 @@ mod tests {
         assert!(temp_lock.exists());
         let content = fs::read_to_string(&temp_lock).unwrap();
         assert!(!content.is_empty(), "lockfile content must not be empty");
+
+        // Verify the newly generated lockfile
+        cmd_verify_lock(&temp_lock).unwrap();
+
         let _ = fs::remove_file(temp_lock);
     }
 }
