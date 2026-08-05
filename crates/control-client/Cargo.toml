@@ -1,0 +1,14 @@
+[package]
+name = "dryer-control-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Synchronous host client for bounded Dryer controller command frames"
+
+[dependencies]
+dryer-control-protocol = { path = "../control-protocol" }
+
+[dev-dependencies]
+dryer-simulator = { path = "../simulator" }

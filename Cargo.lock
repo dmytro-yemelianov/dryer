@@ -81,6 +81,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dryer-control-client"
+version = "0.1.0"
+dependencies = [
+ "dryer-control-protocol",
+ "dryer-simulator",
+]
+
+[[package]]
 name = "dryer-control-protocol"
 version = "0.1.0"
 dependencies = [
