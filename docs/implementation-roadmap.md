@@ -203,6 +203,11 @@ tests exist and pass, not that a type was declared.
   synchronization status tracking. Resolver workflow validation now enforces capability
   requirements (`E1702`), locked resource bindings (`E1703`), and workflow step action
   calls (`E1704`).
+  Slice 25 adds `dryer-toolpath-auditor` (§23.6) for pre-flight toolpath auditing
+  (kinematics position bounds, maximum feed rates, thermal safety ceilings), `FlashExecutor`
+  hardware flashing trait + `MockFlashExecutor` in `dryer-firmware-flash`, and an end-to-end
+  workflow lowering, pre-flight audit, wire encoding, and simulator job execution integration
+  test suite (`e2e_job_execution.rs`).
 - [x] **10. Cross-platform flash discovery and dry-run plans** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies

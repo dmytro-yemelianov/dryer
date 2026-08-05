@@ -540,6 +540,90 @@ fn sha256(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlashResult {
+    pub success: bool,
+    pub controller_id: String,
+    pub bytes_written: usize,
+    pub execution_log: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlashExecutionError {
+    PlanNotReady { reason: String },
+    ChecksumMismatch { expected: String, actual: String },
+    DeviceNotFound { target: String },
+    TransportError { message: String },
+}
+
+impl fmt::Display for FlashExecutionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PlanNotReady { reason } => write!(f, "flash plan not ready: {reason}"),
+            Self::ChecksumMismatch { expected, actual } => {
+                write!(f, "artifact checksum mismatch: expected {expected}, actual {actual}")
+            }
+            Self::DeviceNotFound { target } => write!(f, "flash target device '{target}' not found"),
+            Self::TransportError { message } => write!(f, "flash transport error: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for FlashExecutionError {}
+
+pub trait FlashExecutor {
+    fn execute_flash(
+        &mut self,
+        plan: &FlashPlan,
+        artifact_bytes: &[u8],
+    ) -> Result<FlashResult, FlashExecutionError>;
+}
+
+/// In-memory mock executor for flash testing and simulator hardware verification.
+#[derive(Debug, Default)]
+pub struct MockFlashExecutor {
+    pub flashed_artifacts: Vec<(String, Vec<u8>)>,
+}
+
+impl FlashExecutor for MockFlashExecutor {
+    fn execute_flash(
+        &mut self,
+        plan: &FlashPlan,
+        artifact_bytes: &[u8],
+    ) -> Result<FlashResult, FlashExecutionError> {
+        if !plan.ready {
+            let reason = plan
+                .blocked_reasons
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "plan is deployable: false".into());
+            return Err(FlashExecutionError::PlanNotReady { reason });
+        }
+
+        let actual_hash = format!("sha256:{:x}", Sha256::digest(artifact_bytes));
+
+        if actual_hash != plan.artifact.expected_sha256 {
+            return Err(FlashExecutionError::ChecksumMismatch {
+                expected: plan.artifact.expected_sha256.clone(),
+                actual: actual_hash,
+            });
+        }
+
+        self.flashed_artifacts
+            .push((plan.controller.clone(), artifact_bytes.to_vec()));
+
+        Ok(FlashResult {
+            success: true,
+            controller_id: plan.controller.clone(),
+            bytes_written: artifact_bytes.len(),
+            execution_log: vec![
+                format!("verified checksum {}", plan.artifact.expected_sha256),
+                format!("flashed {} bytes to {}", artifact_bytes.len(), plan.controller),
+            ],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,5 +669,58 @@ mod tests {
         let selection = match_usb_devices(rule, &[device(1, Some("different"))]);
         assert_eq!(selection.status, MatchStatus::Missing);
         assert!(selection.candidates.is_empty());
+    }
+
+    #[test]
+    fn mock_flash_executor_verifies_checksum_and_records_flashed_bytes() {
+        let payload_bytes = b"dryer_controller_image_bytes";
+        let hash = format!("sha256:{:x}", Sha256::digest(payload_bytes));
+
+        let plan = FlashPlan {
+            schema: FLASH_PLAN_SCHEMA.into(),
+            mode: "dfu".into(),
+            ready: true,
+            controller: "mainboard".into(),
+            lock_hash: "sha256:dummy".into(),
+            board: "boards/cartesian-mainboard@1.0.0".into(),
+            method: "dfu".into(),
+            transport: "usb".into(),
+            device_selection: DeviceSelection {
+                rule: UsbSelectionRule {
+                    usb_vid: 0x1209,
+                    usb_pid: 0xd003,
+                    serial_number: None,
+                    manufacturer: None,
+                    product: None,
+                },
+                status: MatchStatus::Unique,
+                candidates: vec![device(1, None)],
+            },
+            expected_current_firmware: "1.0.0".into(),
+            artifact: ArtifactPlan {
+                format: "bin".into(),
+                path: "images/mainboard.bin".into(),
+                size_bytes: payload_bytes.len() as u64,
+                expected_sha256: hash.clone(),
+                observed_sha256: hash.clone(),
+                hash_matches: true,
+                deployable: true,
+                signature: None,
+            },
+            steps: Vec::new(),
+            blocked_reasons: Vec::new(),
+            recovery: Vec::new(),
+        };
+
+        let mut executor = MockFlashExecutor::default();
+        let result = executor.execute_flash(&plan, payload_bytes).unwrap();
+        assert!(result.success);
+        assert_eq!(result.controller_id, "mainboard");
+        assert_eq!(result.bytes_written, payload_bytes.len());
+        assert_eq!(executor.flashed_artifacts.len(), 1);
+
+        // Mismatched checksum is rejected
+        let bad_result = executor.execute_flash(&plan, b"corrupted_bytes");
+        assert!(matches!(bad_result, Err(FlashExecutionError::ChecksumMismatch { .. })));
     }
 }

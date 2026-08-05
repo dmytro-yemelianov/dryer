@@ -1,0 +1,14 @@
+[package]
+name = "dryer-toolpath-auditor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pre-flight job and toolpath auditor validating motion, thermal limits, and kinematics bounds"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+dryer-control-protocol = { path = "../control-protocol" }
+dryer-machine-schema = { path = "../machine-schema" }

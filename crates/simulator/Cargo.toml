@@ -19,3 +19,6 @@ dryer-machine-parser = { path = "../machine-parser" }
 dryer-machine-resolver = { path = "../machine-resolver" }
 dryer-package-model = { path = "../package-model" }
 dryer-machine-schema = { path = "../machine-schema" }
+dryer-toolpath-auditor = { path = "../toolpath-auditor" }
+dryer-control-client = { path = "../control-client" }
+serde_yaml = { workspace = true }
