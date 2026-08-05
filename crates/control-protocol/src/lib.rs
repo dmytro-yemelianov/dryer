@@ -18,6 +18,8 @@ pub const MAGIC: [u8; 2] = *b"DR";
 pub const PROTOCOL_VERSION: u8 = 1;
 pub const COMMAND_MESSAGE_TYPE: u8 = 1;
 pub const QUEUE_STATUS_MESSAGE_TYPE: u8 = 2;
+pub const CLOCK_REQUEST_MESSAGE_TYPE: u8 = 3;
+pub const CLOCK_RESPONSE_MESSAGE_TYPE: u8 = 4;
 pub const HEADER_LEN: usize = 10;
 pub const CHECKSUM_LEN: usize = 4;
 pub const MAX_STRING_LEN: usize = 63;
@@ -25,6 +27,10 @@ pub const MAX_PAYLOAD_LEN: usize = 128;
 pub const MAX_FRAME_LEN: usize = HEADER_LEN + MAX_PAYLOAD_LEN + CHECKSUM_LEN;
 pub const QUEUE_STATUS_PAYLOAD_LEN: usize = 22;
 pub const QUEUE_STATUS_FRAME_LEN: usize = HEADER_LEN + QUEUE_STATUS_PAYLOAD_LEN + CHECKSUM_LEN;
+pub const CLOCK_REQUEST_PAYLOAD_LEN: usize = 1;
+pub const CLOCK_RESPONSE_PAYLOAD_LEN: usize = 17;
+pub const CLOCK_REQUEST_FRAME_LEN: usize = HEADER_LEN + CLOCK_REQUEST_PAYLOAD_LEN + CHECKSUM_LEN;
+pub const CLOCK_RESPONSE_FRAME_LEN: usize = HEADER_LEN + CLOCK_RESPONSE_PAYLOAD_LEN + CHECKSUM_LEN;
 
 const FLAG_EXECUTE_AT: u8 = 1 << 0;
 const KNOWN_FLAGS: u8 = FLAG_EXECUTE_AT;
@@ -79,6 +85,23 @@ pub struct QueueStatus {
 pub struct QueueStatusFrame {
     pub sequence: u32,
     pub status: QueueStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClockRequestFrame {
+    pub sequence: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClockResponse {
+    pub controller_receive: Tick,
+    pub controller_send: Tick,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClockResponseFrame {
+    pub sequence: u32,
+    pub response: ClockResponse,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,6 +430,158 @@ pub fn decode_queue_status(input: &[u8]) -> Result<QueueStatusFrame, DecodeError
             underrun: state_flags & QUEUE_STATUS_FLAG_UNDERRUN != 0,
         },
     })
+}
+
+pub fn encode_clock_request(
+    frame: &ClockRequestFrame,
+    output: &mut [u8],
+) -> Result<usize, EncodeError> {
+    if output.len() < CLOCK_REQUEST_FRAME_LEN {
+        return Err(EncodeError::BufferTooSmall {
+            needed: CLOCK_REQUEST_FRAME_LEN,
+            available: output.len(),
+        });
+    }
+    let output_len = output.len();
+    let mut writer = Writer::new(output);
+    writer.write(&MAGIC)?;
+    writer.write_u8(PROTOCOL_VERSION)?;
+    writer.write_u8(CLOCK_REQUEST_MESSAGE_TYPE)?;
+    writer.write(&frame.sequence.to_le_bytes())?;
+    writer.write(&(CLOCK_REQUEST_PAYLOAD_LEN as u16).to_le_bytes())?;
+    writer.write_u8(0)?;
+    let payload_end = writer.position();
+    let checksum = crc32c(writer.buffer().get(2..payload_end).ok_or(
+        EncodeError::BufferTooSmall {
+            needed: CLOCK_REQUEST_FRAME_LEN,
+            available: output_len,
+        },
+    )?);
+    writer.write(&checksum.to_le_bytes())?;
+    Ok(writer.position())
+}
+
+pub fn decode_clock_request(input: &[u8]) -> Result<ClockRequestFrame, DecodeError> {
+    let (sequence, payload) =
+        decode_fixed_header(input, CLOCK_REQUEST_MESSAGE_TYPE, CLOCK_REQUEST_PAYLOAD_LEN)?;
+    let mut reader = Reader::new(payload);
+    let flags = reader.read_u8()?;
+    if flags != 0 {
+        return Err(DecodeError::InvalidFlags { flags });
+    }
+    Ok(ClockRequestFrame { sequence })
+}
+
+pub fn encode_clock_response(
+    frame: &ClockResponseFrame,
+    output: &mut [u8],
+) -> Result<usize, EncodeError> {
+    if output.len() < CLOCK_RESPONSE_FRAME_LEN {
+        return Err(EncodeError::BufferTooSmall {
+            needed: CLOCK_RESPONSE_FRAME_LEN,
+            available: output.len(),
+        });
+    }
+    let output_len = output.len();
+    let mut writer = Writer::new(output);
+    writer.write(&MAGIC)?;
+    writer.write_u8(PROTOCOL_VERSION)?;
+    writer.write_u8(CLOCK_RESPONSE_MESSAGE_TYPE)?;
+    writer.write(&frame.sequence.to_le_bytes())?;
+    writer.write(&(CLOCK_RESPONSE_PAYLOAD_LEN as u16).to_le_bytes())?;
+    writer.write_u8(0)?;
+    writer.write(&frame.response.controller_receive.to_le_bytes())?;
+    writer.write(&frame.response.controller_send.to_le_bytes())?;
+    let payload_end = writer.position();
+    let checksum = crc32c(writer.buffer().get(2..payload_end).ok_or(
+        EncodeError::BufferTooSmall {
+            needed: CLOCK_RESPONSE_FRAME_LEN,
+            available: output_len,
+        },
+    )?);
+    writer.write(&checksum.to_le_bytes())?;
+    Ok(writer.position())
+}
+
+pub fn decode_clock_response(input: &[u8]) -> Result<ClockResponseFrame, DecodeError> {
+    let (sequence, payload) = decode_fixed_header(
+        input,
+        CLOCK_RESPONSE_MESSAGE_TYPE,
+        CLOCK_RESPONSE_PAYLOAD_LEN,
+    )?;
+    let mut reader = Reader::new(payload);
+    let flags = reader.read_u8()?;
+    if flags != 0 {
+        return Err(DecodeError::InvalidFlags { flags });
+    }
+    Ok(ClockResponseFrame {
+        sequence,
+        response: ClockResponse {
+            controller_receive: reader.read_u64()?,
+            controller_send: reader.read_u64()?,
+        },
+    })
+}
+
+fn decode_fixed_header(
+    input: &[u8],
+    expected_type: u8,
+    expected_payload: usize,
+) -> Result<(u32, &[u8]), DecodeError> {
+    require_len(input, 2)?;
+    let found = [input[0], input[1]];
+    if found != MAGIC {
+        return Err(DecodeError::InvalidMagic { found });
+    }
+    require_len(input, HEADER_LEN)?;
+    let version = input[2];
+    if version != PROTOCOL_VERSION {
+        return Err(DecodeError::UnsupportedVersion { version });
+    }
+    let message_type = input[3];
+    if message_type != expected_type {
+        return Err(DecodeError::UnsupportedMessageType { message_type });
+    }
+    let sequence = u32::from_le_bytes([input[4], input[5], input[6], input[7]]);
+    let payload_len = u16::from_le_bytes([input[8], input[9]]) as usize;
+    if payload_len > MAX_PAYLOAD_LEN {
+        return Err(DecodeError::PayloadTooLong {
+            length: payload_len,
+            maximum: MAX_PAYLOAD_LEN,
+        });
+    }
+    let frame_len = HEADER_LEN + payload_len + CHECKSUM_LEN;
+    require_len(input, frame_len)?;
+    if input.len() > frame_len {
+        return Err(DecodeError::TrailingFrameBytes {
+            count: input.len() - frame_len,
+        });
+    }
+    let payload_end = HEADER_LEN + payload_len;
+    let encoded_checksum = read_u32_at(input, payload_end)?;
+    let computed_checksum = crc32c(input.get(2..payload_end).ok_or(DecodeError::Truncated {
+        needed: payload_end,
+        available: input.len(),
+    })?);
+    if encoded_checksum != computed_checksum {
+        return Err(DecodeError::ChecksumMismatch {
+            encoded: encoded_checksum,
+            computed: computed_checksum,
+        });
+    }
+    if payload_len != expected_payload {
+        return Err(DecodeError::InvalidPayloadLength {
+            expected: expected_payload,
+            actual: payload_len,
+        });
+    }
+    let payload = input
+        .get(HEADER_LEN..payload_end)
+        .ok_or(DecodeError::Truncated {
+            needed: payload_end,
+            available: input.len(),
+        })?;
+    Ok((sequence, payload))
 }
 
 fn encoded_payload_len(envelope: &CommandEnvelope) -> Result<usize, EncodeError> {

@@ -1,9 +1,97 @@
 use dryer_control_protocol::{
-    decode_command, decode_queue_status, encode_command, encode_queue_status, Command,
-    CommandEnvelope, CommandFrame, DecodeError, EncodeError, QueueStatus, QueueStatusFrame,
-    CHECKSUM_LEN, HEADER_LEN, MAX_FRAME_LEN, MAX_PAYLOAD_LEN, MAX_STRING_LEN,
+    decode_clock_request, decode_clock_response, decode_command, decode_queue_status,
+    encode_clock_request, encode_clock_response, encode_command, encode_queue_status,
+    ClockRequestFrame, ClockResponse, ClockResponseFrame, Command, CommandEnvelope, CommandFrame,
+    DecodeError, EncodeError, QueueStatus, QueueStatusFrame, CHECKSUM_LEN, CLOCK_REQUEST_FRAME_LEN,
+    CLOCK_RESPONSE_FRAME_LEN, HEADER_LEN, MAX_FRAME_LEN, MAX_PAYLOAD_LEN, MAX_STRING_LEN,
     QUEUE_STATUS_FRAME_LEN, QUEUE_STATUS_MESSAGE_TYPE, QUEUE_STATUS_PAYLOAD_LEN,
 };
+
+#[test]
+fn clock_frames_round_trip_boundaries_and_cross_type() {
+    for request in [
+        ClockRequestFrame { sequence: 0 },
+        ClockRequestFrame { sequence: u32::MAX },
+    ] {
+        let mut bytes = [0xa5; CLOCK_REQUEST_FRAME_LEN];
+        assert_eq!(
+            encode_clock_request(&request, &mut bytes),
+            Ok(CLOCK_REQUEST_FRAME_LEN)
+        );
+        assert_eq!(decode_clock_request(&bytes), Ok(request.clone()));
+        assert_eq!(
+            decode_clock_response(&bytes),
+            Err(DecodeError::UnsupportedMessageType { message_type: 3 })
+        );
+    }
+    let response = ClockResponseFrame {
+        sequence: u32::MAX,
+        response: ClockResponse {
+            controller_receive: 0,
+            controller_send: u64::MAX,
+        },
+    };
+    let mut bytes = [0xa5; CLOCK_RESPONSE_FRAME_LEN];
+    assert_eq!(
+        encode_clock_response(&response, &mut bytes),
+        Ok(CLOCK_RESPONSE_FRAME_LEN)
+    );
+    assert_eq!(decode_clock_response(&bytes), Ok(response));
+    assert_eq!(
+        decode_clock_request(&bytes),
+        Err(DecodeError::UnsupportedMessageType { message_type: 4 })
+    );
+    for len in 0..CLOCK_RESPONSE_FRAME_LEN {
+        assert!(matches!(
+            decode_clock_response(&bytes[..len]),
+            Err(DecodeError::Truncated { .. })
+        ));
+    }
+
+    let request = ClockRequestFrame { sequence: 3 };
+    let mut request_bytes = [0; CLOCK_REQUEST_FRAME_LEN];
+    encode_clock_request(&request, &mut request_bytes).unwrap();
+    for len in 0..CLOCK_REQUEST_FRAME_LEN {
+        assert!(matches!(
+            decode_clock_request(&request_bytes[..len]),
+            Err(DecodeError::Truncated { .. })
+        ));
+    }
+}
+
+#[test]
+fn clock_frames_reject_reserved_flags_and_short_buffers() {
+    let request = ClockRequestFrame { sequence: 7 };
+    let mut short = [0xa5; CLOCK_REQUEST_FRAME_LEN - 1];
+    assert!(matches!(
+        encode_clock_request(&request, &mut short),
+        Err(EncodeError::BufferTooSmall { .. })
+    ));
+    assert!(short.iter().all(|byte| *byte == 0xa5));
+    let mut bytes = [0; CLOCK_REQUEST_FRAME_LEN];
+    encode_clock_request(&request, &mut bytes).unwrap();
+    bytes[HEADER_LEN] = 1;
+    let checksum = crc32c(&bytes[2..HEADER_LEN + 1]);
+    bytes[HEADER_LEN + 1..].copy_from_slice(&checksum.to_le_bytes());
+    assert_eq!(
+        decode_clock_request(&bytes),
+        Err(DecodeError::InvalidFlags { flags: 1 })
+    );
+
+    let response = ClockResponseFrame {
+        sequence: 1,
+        response: ClockResponse {
+            controller_receive: 2,
+            controller_send: 3,
+        },
+    };
+    let mut response_bytes = [0xa5; CLOCK_RESPONSE_FRAME_LEN - 1];
+    assert!(matches!(
+        encode_clock_response(&response, &mut response_bytes),
+        Err(EncodeError::BufferTooSmall { .. })
+    ));
+    assert!(response_bytes.iter().all(|byte| *byte == 0xa5));
+}
 
 const HEARTBEAT_GOLDEN: &[u8] = &[
     0x44, 0x52, 0x01, 0x01, 0x04, 0x03, 0x02, 0x01, 0x02, 0x00, 0x00, 0x00, 0x5d, 0x46, 0x57, 0x19,

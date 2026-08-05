@@ -180,6 +180,13 @@ tests exist and pass, not that a type was declared.
   processing-excluded residual metric. The crate is allocation-free and `no_std`;
   obtaining timestamps on a wire and applying queue/scheduling policy remain
   separate follow-up boundaries.
+- [x] **21. Clock synchronization wire ABI** — `dryer-control-protocol` now
+  defines type-3 clock requests and type-4 responses with strict fixed payload
+  lengths, reserved-bit validation, CRC checks, and a sequence carried for
+  external exchange correlation.
+  `dryer-control-client` exposes transport-agnostic response decoding; host
+  timestamp capture and estimator/session matching remain deliberately outside
+  the codec.
 - [x] **10. Cross-platform flash discovery and dry-run plans** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies

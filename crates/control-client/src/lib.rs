@@ -7,7 +7,8 @@
 use core::fmt;
 
 pub use dryer_control_protocol::{
-    decode_queue_status, Command, DecodeError, QueueStatus, QueueStatusFrame, Tick,
+    decode_clock_response, decode_queue_status, ClockRequestFrame, ClockResponse,
+    ClockResponseFrame, Command, DecodeError, QueueStatus, QueueStatusFrame, Tick,
 };
 use dryer_control_protocol::{
     encode_command, CommandEnvelope, CommandFrame, EncodeError, MAX_FRAME_LEN,
@@ -19,6 +20,11 @@ use dryer_control_protocol::{
 /// obtaining exactly one frame from their transport.
 pub fn decode_queue_status_frame(input: &[u8]) -> Result<QueueStatusFrame, DecodeError> {
     decode_queue_status(input)
+}
+
+/// Decode and validate one complete controller clock-sync response.
+pub fn decode_clock_response_frame(input: &[u8]) -> Result<ClockResponseFrame, DecodeError> {
+    decode_clock_response(input)
 }
 
 /// A synchronous destination for one complete encoded command frame.
@@ -151,7 +157,8 @@ impl<S: FrameSink> CommandClient<S> {
 mod tests {
     use super::*;
     use dryer_control_protocol::{
-        decode_command, encode_queue_status, MAX_STRING_LEN, QUEUE_STATUS_FRAME_LEN,
+        decode_command, encode_clock_response, encode_queue_status, ClockResponse,
+        ClockResponseFrame, CLOCK_RESPONSE_FRAME_LEN, MAX_STRING_LEN, QUEUE_STATUS_FRAME_LEN,
     };
 
     #[derive(Debug, Default)]
@@ -333,6 +340,24 @@ mod tests {
         let length = encode_queue_status(&expected, &mut encoded).expect("queue status encodes");
 
         assert_eq!(decode_queue_status_frame(&encoded[..length]), Ok(expected));
+    }
+
+    #[test]
+    fn clock_response_decodes_through_client_api() {
+        let expected = ClockResponseFrame {
+            sequence: 9,
+            response: ClockResponse {
+                controller_receive: 100,
+                controller_send: 125,
+            },
+        };
+        let mut encoded = [0; CLOCK_RESPONSE_FRAME_LEN];
+        let length =
+            encode_clock_response(&expected, &mut encoded).expect("clock response encodes");
+        assert_eq!(
+            decode_clock_response_frame(&encoded[..length]),
+            Ok(expected)
+        );
     }
 
     #[test]

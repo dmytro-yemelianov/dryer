@@ -11,7 +11,7 @@ Platform API                 — none
 Workflow runtime             — none
 Machine state service        — none
 Motion planner               — none
-Control protocol             — control-protocol (v1 framing) + control-client (outbound boundary)
+Control protocol             — control-protocol (v1 framing) + control-client (outbound/receive boundary)
 MCU runtime                  — simulator (behavioral test model, no firmware)
 Hardware                     — none
 ─────────────────────────────────────────────
