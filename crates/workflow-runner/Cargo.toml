@@ -1,0 +1,19 @@
+[package]
+name = "dryer-workflow-runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Streaming workflow runner and dynamic job queue dispatcher for Dryer"
+
+[dependencies]
+dryer-controller-daemon = { path = "../controller-daemon" }
+dryer-control-protocol = { path = "../control-protocol" }
+dryer-control-client = { path = "../control-client" }
+dryer-toolpath-auditor = { path = "../toolpath-auditor" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+dryer-simulator = { path = "../simulator" }

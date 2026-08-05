@@ -1,0 +1,19 @@
+[package]
+name = "dryer-controller-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Host-side controller state service, connection manager, and heartbeat guard for Dryer"
+
+[dependencies]
+dryer-control-client = { path = "../control-client" }
+dryer-control-protocol = { path = "../control-protocol" }
+dryer-clock-sync = { path = "../clock-sync" }
+dryer-machine-lock = { path = "../machine-lock" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+dryer-simulator = { path = "../simulator" }

@@ -28,6 +28,7 @@ SUBCOMMANDS:
     flash-plan <machine.lock>       Discover USB devices and generate dry-run flash plan
     audit <job.json>                Run pre-flight kinematics, feed rate & thermal audit
     sim <job.json>                  Execute job in simulator and output execution trace
+    daemon <machine.lock> [mcu]     Run host controller daemon state service
     help                            Show this help message
 "#
     );
@@ -85,6 +86,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
             cmd_sim(Path::new(&args[2]))?;
+        }
+        "daemon" => {
+            if args.len() < 3 {
+                eprintln!("Error: missing <machine.lock> path");
+                std::process::exit(1);
+            }
+            let controller = args.get(3).map(|s| s.as_str()).unwrap_or("mainboard");
+            cmd_daemon(Path::new(&args[2]), controller)?;
         }
         "help" | "-h" | "--help" => {
             print_usage();
@@ -241,9 +250,20 @@ fn cmd_flash_plan(
     Ok(())
 }
 
-fn cmd_audit(job_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn load_job_commands(job_path: &Path) -> Result<Vec<Command>, Box<dyn std::error::Error>> {
     let content = fs::read_to_string(job_path)?;
-    let commands: Vec<Command> = serde_json::from_str(&content)?;
+    if let Ok(cmds) = serde_json::from_str::<Vec<Command>>(&content) {
+        Ok(cmds)
+    } else {
+        let mut lowerer =
+            dryer_gcode_lowerer::GcodeLowerer::new(dryer_gcode_lowerer::LowererConfig::default());
+        let cmds = lowerer.lower_source(&content)?;
+        Ok(cmds)
+    }
+}
+
+fn cmd_audit(job_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let commands = load_job_commands(job_path)?;
 
     let mut axes = BTreeMap::new();
     axes.insert("x".into(), AxisLimit { min_um: 0, max_um: 200_000 });
@@ -267,8 +287,7 @@ fn cmd_audit(job_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cmd_sim(job_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let content = fs::read_to_string(job_path)?;
-    let commands: Vec<Command> = serde_json::from_str(&content)?;
+    let commands = load_job_commands(job_path)?;
 
     let heater_cfg = HeaterCfg {
         name: "hotend_heater".into(),
@@ -305,6 +324,24 @@ fn cmd_sim(job_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn cmd_daemon(lock_path: &Path, controller_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use dryer_controller_daemon::*;
+
+    let lock_bytes = fs::read_to_string(lock_path)?;
+    let lockfile = Lockfile::from_yaml(&lock_bytes)?;
+
+    let mut daemon = ControllerDaemon::new();
+    daemon.register_controller(controller_id, 50_000);
+
+    println!("⚡ Dryer Controller Daemon initialized for lock '{}'", lockfile.lock_hash());
+    println!("   Active Controllers: {:?}", daemon.active_controller_ids());
+    println!("   Daemon State:       {:?}", daemon.state());
+
+    let summary = daemon.daemon_status_summary(1_000);
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +375,21 @@ mod tests {
         // Verify the newly generated lockfile
         cmd_verify_lock(&temp_lock).unwrap();
 
+        // Verify daemon command
+        cmd_daemon(&temp_lock, "mainboard").unwrap();
+
         let _ = fs::remove_file(temp_lock);
+    }
+
+    #[test]
+    fn cli_audit_and_sim_accept_gcode_files() {
+        let gcode_content = "M104 S200\nG28\nG1 F3000 X10 Y20\n";
+        let temp_gcode = env::temp_dir().join(format!("test-gcode-{}.gcode", std::process::id()));
+        fs::write(&temp_gcode, gcode_content).unwrap();
+
+        cmd_audit(&temp_gcode).unwrap();
+        cmd_sim(&temp_gcode).unwrap();
+
+        let _ = fs::remove_file(temp_gcode);
     }
 }

@@ -15,6 +15,10 @@ members = [
     "crates/firmware-flash",
     "crates/toolpath-auditor",
     "crates/dryer-cli",
+    "crates/gcode-lowerer",
+    "crates/controller-daemon",
+    "crates/workflow-runner",
+    "crates/transport-adapter",
 ]
 
 [workspace.package]

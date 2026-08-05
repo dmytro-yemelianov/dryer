@@ -212,6 +212,9 @@ tests exist and pass, not that a type was declared.
   document checking (`dryer check`), canonical lockfile generation (`dryer lock`), USB discovery
   and dry-run flash planning (`dryer flash-plan`), pre-flight toolpath auditing (`dryer audit`),
   and job execution simulation (`dryer sim`).
+  Slice 27 adds `dryer-controller-daemon` (`crates/controller-daemon`), providing host-side
+  controller session management, heartbeat safety auditing, queue fill tracking, cluster clock
+  synchronization, and `dryer daemon` subcommand integration.
 - [x] **10. Cross-platform flash discovery and dry-run plans** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies

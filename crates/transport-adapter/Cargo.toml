@@ -1,0 +1,17 @@
+[package]
+name = "dryer-transport-adapter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Stream transport adapter, framing delimitation, and daemon reader integration for Dryer"
+
+[dependencies]
+dryer-control-protocol = { path = "../control-protocol" }
+dryer-control-client = { path = "../control-client" }
+dryer-controller-daemon = { path = "../controller-daemon" }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

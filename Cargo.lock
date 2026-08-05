@@ -86,8 +86,10 @@ version = "0.1.0"
 dependencies = [
  "dryer-control-client",
  "dryer-control-protocol",
+ "dryer-controller-daemon",
  "dryer-firmware-build",
  "dryer-firmware-flash",
+ "dryer-gcode-lowerer",
  "dryer-machine-lock",
  "dryer-machine-parser",
  "dryer-machine-resolver",
@@ -120,6 +122,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dryer-controller-daemon"
+version = "0.1.0"
+dependencies = [
+ "dryer-clock-sync",
+ "dryer-control-client",
+ "dryer-control-protocol",
+ "dryer-machine-lock",
+ "dryer-simulator",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dryer-firmware-build"
 version = "0.1.0"
 dependencies = [
@@ -143,6 +158,15 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+]
+
+[[package]]
+name = "dryer-gcode-lowerer"
+version = "0.1.0"
+dependencies = [
+ "dryer-control-protocol",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -236,6 +260,30 @@ version = "0.1.0"
 dependencies = [
  "dryer-control-protocol",
  "dryer-machine-schema",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "dryer-transport-adapter"
+version = "0.1.0"
+dependencies = [
+ "dryer-control-client",
+ "dryer-control-protocol",
+ "dryer-controller-daemon",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "dryer-workflow-runner"
+version = "0.1.0"
+dependencies = [
+ "dryer-control-client",
+ "dryer-control-protocol",
+ "dryer-controller-daemon",
+ "dryer-simulator",
+ "dryer-toolpath-auditor",
  "serde",
  "serde_json",
 ]

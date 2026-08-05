@@ -1,0 +1,17 @@
+[package]
+name = "dryer-gcode-lowerer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "G-code transpiler lowering slicer G-code into typed dryer_control_protocol::Command streams"
+
+[lib]
+name = "dryer_gcode_lowerer"
+path = "src/lib.rs"
+
+[dependencies]
+dryer-control-protocol = { path = "../control-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }

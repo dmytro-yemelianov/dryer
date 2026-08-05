@@ -536,9 +536,12 @@ fn exact_locked_board<'a>(
     }
 }
 
-fn sha256(bytes: &[u8]) -> String {
+pub fn sha256(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
+
+pub mod executor;
+pub use executor::{generate_command, FlashCommand, FlashToolMethod, NativeFlashExecutor};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlashResult {

@@ -23,5 +23,7 @@ dryer-control-client = { path = "../control-client" }
 dryer-simulator = { path = "../simulator" }
 dryer-toolpath-auditor = { path = "../toolpath-auditor" }
 dryer-package-model = { path = "../package-model" }
+dryer-controller-daemon = { path = "../controller-daemon" }
+dryer-gcode-lowerer = { path = "../gcode-lowerer" }
 serde = { workspace = true }
 serde_json = { workspace = true }
