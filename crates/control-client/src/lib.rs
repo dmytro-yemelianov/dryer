@@ -6,10 +6,20 @@
 
 use core::fmt;
 
+pub use dryer_control_protocol::{
+    decode_queue_status, Command, DecodeError, QueueStatus, QueueStatusFrame, Tick,
+};
 use dryer_control_protocol::{
     encode_command, CommandEnvelope, CommandFrame, EncodeError, MAX_FRAME_LEN,
 };
-pub use dryer_control_protocol::{Command, Tick};
+
+/// Decode and validate one complete controller queue-status observation.
+///
+/// This function is transport-agnostic: callers remain responsible for
+/// obtaining exactly one frame from their transport.
+pub fn decode_queue_status_frame(input: &[u8]) -> Result<QueueStatusFrame, DecodeError> {
+    decode_queue_status(input)
+}
 
 /// A synchronous destination for one complete encoded command frame.
 pub trait FrameSink {
@@ -140,7 +150,9 @@ impl<S: FrameSink> CommandClient<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dryer_control_protocol::{decode_command, MAX_STRING_LEN};
+    use dryer_control_protocol::{
+        decode_command, encode_queue_status, MAX_STRING_LEN, QUEUE_STATUS_FRAME_LEN,
+    };
 
     #[derive(Debug, Default)]
     struct RecordingSink {
@@ -303,5 +315,50 @@ mod tests {
         client.sink_mut().frames.push(vec![1, 2, 3]);
         let sink = client.into_sink();
         assert_eq!(sink.frames, [vec![1, 2, 3]]);
+    }
+
+    #[test]
+    fn queue_status_observation_decodes_through_client_api() {
+        let expected = QueueStatusFrame {
+            sequence: 17,
+            status: QueueStatus {
+                capacity: 64,
+                fill: 12,
+                earliest_accepted: 120_000,
+                latest_accepted: 240_000,
+                underrun: true,
+            },
+        };
+        let mut encoded = [0; QUEUE_STATUS_FRAME_LEN];
+        let length = encode_queue_status(&expected, &mut encoded).expect("queue status encodes");
+
+        assert_eq!(decode_queue_status_frame(&encoded[..length]), Ok(expected));
+    }
+
+    #[test]
+    fn queue_status_decode_errors_propagate_unchanged() {
+        assert_eq!(
+            decode_queue_status_frame(b"DX"),
+            Err(DecodeError::InvalidMagic { found: *b"DX" })
+        );
+
+        let frame = QueueStatusFrame {
+            sequence: 1,
+            status: QueueStatus {
+                capacity: 8,
+                fill: 2,
+                earliest_accepted: 10,
+                latest_accepted: 20,
+                underrun: false,
+            },
+        };
+        let mut encoded = [0; QUEUE_STATUS_FRAME_LEN];
+        encode_queue_status(&frame, &mut encoded).expect("queue status encodes");
+        encoded[10] ^= 0x80;
+
+        assert!(matches!(
+            decode_queue_status_frame(&encoded),
+            Err(DecodeError::ChecksumMismatch { .. })
+        ));
     }
 }
