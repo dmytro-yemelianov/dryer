@@ -70,8 +70,7 @@ pub(super) fn validate(
                 .attributes
                 .get("driver")
                 .and_then(|value| value.as_str())
-                .is_some()
-            && !targets.is_empty();
+                .is_some();
         let policy = profile.classes.get(&comp.kind);
         if (hazardous || driver_backed) && policy.is_none() {
             let output = if driver_backed {
