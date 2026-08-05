@@ -156,6 +156,10 @@ tests exist and pass, not that a type was declared.
   CRC-32C integrity, byte goldens, malformed-input coverage, and simulator
   compatibility checks. The codec is a wire boundary only; no native host client
   or MCU firmware is implied by this slice.
+  Slice 18 adds `dryer-control-client`: a synchronous outbound boundary with a
+  reusable bounded frame buffer, sequence rollover/error semantics, and a
+  simulator sink adapter. It deliberately does not perform OS I/O, clock sync,
+  motion planning, workflow execution, or receive/ack handling yet.
 - [x] **10. Cross-platform flash discovery and dry-run plans** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies
