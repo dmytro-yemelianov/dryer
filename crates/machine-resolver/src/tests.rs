@@ -1027,3 +1027,36 @@ fn workflow_with_unresolved_lock_resource_emits_e1703() {
     );
 }
 
+#[test]
+fn workflow_step_calling_unsupported_action_emits_e1704() {
+    let mut registry = registry();
+    let pkg = registry
+        .packages
+        .iter_mut()
+        .find(|p| p.reference.to_string() == "workflows/print-start@1.0.0")
+        .expect("print-start workflow package");
+    let source = std::fs::read_to_string(pkg.dir.join("package.yaml")).unwrap();
+    let replaced = source.replace("call: heater.set_target", "call: unsupported_device.fire");
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let temporary = std::env::temp_dir().join(format!("dryer-resolver-wf-step-{nonce}"));
+    std::fs::create_dir_all(&temporary).unwrap();
+    std::fs::write(temporary.join("package.yaml"), replaced).unwrap();
+    pkg.dir = temporary.clone();
+
+    let with_workflow = format!("{}\nworkflows:\n  start: workflows/print-start\n", fixture());
+    let o = resolve_source(&with_workflow, &registry);
+    std::fs::remove_dir_all(temporary).unwrap();
+
+    assert!(!o.is_ok());
+    let d = o.diagnostics.iter().find(|d| d.code == "E1704").unwrap();
+    assert!(
+        d.message.contains("unsupported_device.fire"),
+        "{}",
+        d.message
+    );
+}
+

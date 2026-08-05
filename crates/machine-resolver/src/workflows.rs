@@ -86,6 +86,40 @@ pub(super) fn validate(
                 );
             }
         }
+
+        let declared_capabilities: BTreeSet<&str> = payload
+            .requires
+            .as_ref()
+            .map(|r| r.capabilities.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+
+        let check_step = |step: &dryer_package_model::workflow::WorkflowStep,
+                          context: &str,
+                          diagnostics: &mut Vec<Diagnostic>| {
+            if let Some(call) = &step.call {
+                let family = call.split('.').next().unwrap_or(call.as_str());
+                let is_declared = declared_capabilities.contains(call.as_str());
+                let is_supported = machine_supports_capability_family(doc, family);
+                if !is_declared && !is_supported {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "E1704",
+                            format!(
+                                "workflow '{name}' {context} step calls '{call}', which is neither declared in requires.capabilities nor provided by the machine"
+                            ),
+                        )
+                        .at(format!("workflows.{name}")),
+                    );
+                }
+            }
+        };
+
+        for step in &payload.steps {
+            check_step(step, "step", diagnostics);
+        }
+        for step in &payload.on_cancel {
+            check_step(step, "on_cancel", diagnostics);
+        }
     }
 }
 
