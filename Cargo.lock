@@ -88,6 +88,7 @@ version = "0.1.0"
 name = "dryer-control-client"
 version = "0.1.0"
 dependencies = [
+ "dryer-clock-sync",
  "dryer-control-protocol",
  "dryer-simulator",
 ]

@@ -48,7 +48,7 @@ The authoritative specification lives in `docs/spec.md` (Draft v0.1). Key princi
 | `crates/machine-lock` | `machine.lock` v5: canonical, hashed resolution plus registry provenance, controller-local safety, and build inputs |
 | `crates/firmware-build` | Byte-stable safety artifacts, output-pinned build plans, and inspectable non-executable controller images compiled from `machine.lock` |
 | `crates/control-protocol` | Bounded, allocation-free `dryer.control/v1` command, queue-status, and clock-sync framing with strict validation and CRC-32C integrity |
-| `crates/control-client` | Synchronous fixed-buffer host boundary for sending commands and validating queue-status and clock-sync responses |
+| `crates/control-client` | Synchronous fixed-buffer host boundary for sending commands, validating responses, and correlating clock exchanges |
 | `crates/clock-sync` | Allocation-free integer clock-offset/drift estimation with an explicit bounded-slew model and conservative controller-time confidence windows |
 | `crates/simulator` | Deterministic simulated controller: virtual clock, faulty transport, scheduled queue windows, edge-enforced safety, and structured trace replay |
 | `crates/firmware-flash` | Native USB discovery on Linux/macOS/Windows, strict device matching, artifact verification, and deterministic dry-run flash plans |

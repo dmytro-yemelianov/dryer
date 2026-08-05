@@ -6,10 +6,13 @@
 
 use core::fmt;
 
+use dryer_clock_sync::ControllerTick;
+pub use dryer_clock_sync::{ClockEstimate, ClockSample, ClockSync, ClockSyncError, HostTick};
 pub use dryer_control_protocol::{
     decode_clock_response, decode_queue_status, ClockRequestFrame, ClockResponse,
     ClockResponseFrame, Command, DecodeError, QueueStatus, QueueStatusFrame, Tick,
 };
+use dryer_control_protocol::{encode_clock_request, CLOCK_REQUEST_FRAME_LEN};
 use dryer_control_protocol::{
     encode_command, CommandEnvelope, CommandFrame, EncodeError, MAX_FRAME_LEN,
 };
@@ -25,6 +28,244 @@ pub fn decode_queue_status_frame(input: &[u8]) -> Result<QueueStatusFrame, Decod
 /// Decode and validate one complete controller clock-sync response.
 pub fn decode_clock_response_frame(input: &[u8]) -> Result<ClockResponseFrame, DecodeError> {
     decode_clock_response(input)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClockExchangeError {
+    ExchangePending,
+    NoExchangePending,
+    SequenceMismatch { expected: u32, received: u32 },
+    Decode(DecodeError),
+    Sync(ClockSyncError),
+}
+
+pub trait HostClock {
+    fn now(&mut self) -> HostTick;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockRequestReceipt {
+    pub sequence: u32,
+    pub frame_len: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockExchangeReceipt {
+    pub sequence: u32,
+    pub sample: ClockSample,
+    pub estimate: Option<ClockEstimate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockTimeout {
+    pub sequence: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClockSessionError<E> {
+    Busy { sequence: u32 },
+    SequenceExhausted,
+    Encode(EncodeError),
+    Transport(E),
+    Sync(ClockSyncError),
+    Decode(DecodeError),
+    NoPending,
+    UnexpectedSequence { expected: u32, received: u32 },
+    TimedOut { sequence: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingClockExchange {
+    sequence: u32,
+    host_send: HostTick,
+}
+
+/// Event-driven clock exchange state. Framing, I/O, and timeout scheduling
+/// remain with the caller; this type owns timestamp ordering and correlation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockSession {
+    sync: ClockSync,
+    next_sequence: u32,
+    exhausted: bool,
+    timeout_ticks: u64,
+    pending: Option<PendingClockExchange>,
+    request: [u8; CLOCK_REQUEST_FRAME_LEN],
+}
+
+impl ClockSession {
+    pub fn new(max_slew_ppb: i128, timeout_ticks: u64) -> Result<Self, ClockSyncError> {
+        Ok(Self {
+            sync: ClockSync::new(max_slew_ppb)?,
+            next_sequence: 0,
+            exhausted: false,
+            timeout_ticks,
+            pending: None,
+            request: [0; CLOCK_REQUEST_FRAME_LEN],
+        })
+    }
+
+    pub fn begin<S: FrameSink, C: HostClock>(
+        &mut self,
+        sink: &mut S,
+        clock: &mut C,
+    ) -> Result<ClockRequestReceipt, ClockSessionError<S::Error>> {
+        if let Some(pending) = self.pending {
+            return Err(ClockSessionError::Busy {
+                sequence: pending.sequence,
+            });
+        }
+        if self.exhausted {
+            return Err(ClockSessionError::SequenceExhausted);
+        }
+        let sequence = self.next_sequence;
+        let frame_len = encode_clock_request(&ClockRequestFrame { sequence }, &mut self.request)
+            .map_err(ClockSessionError::Encode)?;
+        self.exhausted = sequence == u32::MAX;
+        self.next_sequence = sequence.wrapping_add(1);
+        let host_send = clock.now();
+        sink.send_frame(&self.request[..frame_len])
+            .map_err(ClockSessionError::Transport)?;
+        self.pending = Some(PendingClockExchange {
+            sequence,
+            host_send,
+        });
+        Ok(ClockRequestReceipt {
+            sequence,
+            frame_len,
+        })
+    }
+
+    pub fn accept_response<C: HostClock>(
+        &mut self,
+        bytes: &[u8],
+        clock: &mut C,
+    ) -> Result<ClockExchangeReceipt, ClockSessionError<core::convert::Infallible>> {
+        let response = decode_clock_response_frame(bytes).map_err(ClockSessionError::Decode)?;
+        let host_receive = clock.now();
+        let pending = self.pending.ok_or(ClockSessionError::NoPending)?;
+        if response.sequence != pending.sequence {
+            return Err(ClockSessionError::UnexpectedSequence {
+                expected: pending.sequence,
+                received: response.sequence,
+            });
+        }
+        if host_receive.0.saturating_sub(pending.host_send.0) >= self.timeout_ticks {
+            self.pending = None;
+            return Err(ClockSessionError::TimedOut {
+                sequence: pending.sequence,
+            });
+        }
+        let sample = ClockSample {
+            host_send: pending.host_send,
+            controller_receive: ControllerTick(response.response.controller_receive),
+            controller_send: ControllerTick(response.response.controller_send),
+            host_receive,
+        };
+        let estimate = self
+            .sync
+            .push(sample)
+            .map_err(ClockSessionError::Sync)?
+            .copied();
+        self.pending = None;
+        Ok(ClockExchangeReceipt {
+            sequence: pending.sequence,
+            sample,
+            estimate,
+        })
+    }
+
+    pub fn expire(&mut self, now: HostTick) -> Option<ClockTimeout> {
+        let pending = self.pending?;
+        if now.0.saturating_sub(pending.host_send.0) >= self.timeout_ticks {
+            self.pending = None;
+            Some(ClockTimeout {
+                sequence: pending.sequence,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn synchronizer(&self) -> &ClockSync {
+        &self.sync
+    }
+}
+
+/// Transport-agnostic state for one outstanding clock exchange.
+///
+/// The transport boundary must call `begin` with a timestamp captured
+/// immediately before handing the encoded request to the transport, then call
+/// `complete` with a timestamp captured immediately after receiving the full
+/// response frame. Only one sequence may be outstanding at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockExchange {
+    sync: ClockSync,
+    next_sequence: u32,
+    pending: Option<(u32, HostTick)>,
+}
+
+impl ClockExchange {
+    pub fn new(max_slew_ppb: i128) -> Result<Self, ClockSyncError> {
+        Ok(Self {
+            sync: ClockSync::new(max_slew_ppb)?,
+            next_sequence: 0,
+            pending: None,
+        })
+    }
+
+    pub fn begin(&mut self, host_send: HostTick) -> Result<ClockRequestFrame, ClockExchangeError> {
+        if self.pending.is_some() {
+            return Err(ClockExchangeError::ExchangePending);
+        }
+        let sequence = self.next_sequence;
+        self.next_sequence = sequence.wrapping_add(1);
+        self.pending = Some((sequence, host_send));
+        Ok(ClockRequestFrame { sequence })
+    }
+
+    pub fn complete(
+        &mut self,
+        host_receive: HostTick,
+        response: ClockResponseFrame,
+    ) -> Result<Option<&ClockEstimate>, ClockExchangeError> {
+        let (expected, host_send) = self.pending.ok_or(ClockExchangeError::NoExchangePending)?;
+        if response.sequence != expected {
+            return Err(ClockExchangeError::SequenceMismatch {
+                expected,
+                received: response.sequence,
+            });
+        }
+        let sample = ClockSample {
+            host_send,
+            controller_receive: dryer_clock_sync::ControllerTick(
+                response.response.controller_receive,
+            ),
+            controller_send: dryer_clock_sync::ControllerTick(response.response.controller_send),
+            host_receive,
+        };
+        let estimate = self.sync.push(sample).map_err(ClockExchangeError::Sync)?;
+        self.pending = None;
+        Ok(estimate)
+    }
+
+    pub fn complete_frame(
+        &mut self,
+        host_receive: HostTick,
+        input: &[u8],
+    ) -> Result<Option<&ClockEstimate>, ClockExchangeError> {
+        let response = decode_clock_response_frame(input).map_err(ClockExchangeError::Decode)?;
+        self.complete(host_receive, response)
+    }
+
+    pub fn estimate(&self) -> Option<&ClockEstimate> {
+        self.sync.estimate()
+    }
+    pub fn next_sequence(&self) -> u32 {
+        self.next_sequence
+    }
+    pub fn pending_sequence(&self) -> Option<u32> {
+        self.pending.map(|(sequence, _)| sequence)
+    }
 }
 
 /// A synchronous destination for one complete encoded command frame.
@@ -358,6 +599,61 @@ mod tests {
             decode_clock_response_frame(&encoded[..length]),
             Ok(expected)
         );
+    }
+
+    #[test]
+    fn clock_exchange_correlates_sequence_and_feeds_estimator() {
+        let mut exchange = ClockExchange::new(0).expect("valid slew bound");
+        let request = exchange.begin(HostTick(100)).expect("request begins");
+        assert_eq!(request.sequence, 0);
+        let response = ClockResponseFrame {
+            sequence: request.sequence,
+            response: ClockResponse {
+                controller_receive: 150,
+                controller_send: 160,
+            },
+        };
+        assert!(exchange
+            .complete(HostTick(200), response)
+            .expect("response completes")
+            .is_none());
+        assert_eq!(exchange.pending_sequence(), None);
+    }
+
+    #[test]
+    fn clock_exchange_rejects_unsolicited_and_mismatched_responses() {
+        let mut exchange = ClockExchange::new(0).expect("valid slew bound");
+        assert_eq!(
+            exchange.complete(
+                HostTick(1),
+                ClockResponseFrame {
+                    sequence: 1,
+                    response: ClockResponse {
+                        controller_receive: 1,
+                        controller_send: 1
+                    },
+                }
+            ),
+            Err(ClockExchangeError::NoExchangePending)
+        );
+        exchange.begin(HostTick(10)).expect("request begins");
+        assert_eq!(
+            exchange.complete(
+                HostTick(20),
+                ClockResponseFrame {
+                    sequence: 99,
+                    response: ClockResponse {
+                        controller_receive: 11,
+                        controller_send: 12
+                    },
+                }
+            ),
+            Err(ClockExchangeError::SequenceMismatch {
+                expected: 0,
+                received: 99
+            })
+        );
+        assert_eq!(exchange.pending_sequence(), Some(0));
     }
 
     #[test]

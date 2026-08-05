@@ -1281,6 +1281,12 @@ after complete frame receipt), then joins t1/t2/t3/t4 by sequence for the
 clock estimator. The wire codec only validates and transports t2/t3; it does
 not match outstanding exchanges or construct estimator samples.
 
+The host session layer owns one outstanding sequence at a time. It captures t1
+immediately before request handoff, captures t4 immediately after complete
+response receipt, rejects unsolicited or mismatched sequences, and passes the
+joined sample to the bounded estimator. Timeout and retry policy remain with
+the transport event loop.
+
 Implement:
 
 - monotonic controller clocks;

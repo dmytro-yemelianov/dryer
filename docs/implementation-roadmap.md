@@ -187,6 +187,12 @@ tests exist and pass, not that a type was declared.
   `dryer-control-client` exposes transport-agnostic response decoding; host
   timestamp capture and estimator/session matching remain deliberately outside
   the codec.
+- [x] **22. Clock exchange session boundary** — `dryer-control-client` now
+  provides a one-outstanding event-driven session that captures caller clock
+  readings immediately around transport handoff and complete-frame receipt,
+  rejects unsolicited or mismatched responses, retires timed-out exchanges,
+  prevents sequence reuse, and feeds `dryer-clock-sync`. It adds no OS I/O or
+  blocking receive policy.
 - [x] **10. Cross-platform flash discovery and dry-run plans** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies
