@@ -13,6 +13,7 @@ pub mod chip;
 pub mod device;
 pub mod machine;
 pub mod safety;
+pub mod workflow;
 
 use dryer_machine_schema::{valid_identifier, Diagnostic};
 use serde::{Deserialize, Serialize};
