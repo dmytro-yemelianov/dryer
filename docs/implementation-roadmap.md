@@ -193,6 +193,11 @@ tests exist and pass, not that a type was declared.
   rejects unsolicited or mismatched responses, retires timed-out exchanges,
   prevents sequence reuse, and feeds `dryer-clock-sync`. It adds no OS I/O or
   blocking receive policy.
+  Slice 23 adds simulator wire-frame processing (`SimController::process_wire_frame`),
+  handling type-1 command execution, type-2 queue status response generation, and
+  type-3/4 clock request/response frame exchanges. Workflow package resolution now
+  includes declared machine workflows in the resolution package closure and validates
+  invocation parameters against package schemas (`E1701`).
 - [x] **10. Cross-platform flash discovery and dry-run plans** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies
