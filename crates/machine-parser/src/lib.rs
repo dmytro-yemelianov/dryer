@@ -13,8 +13,8 @@
 pub mod spans;
 
 use dryer_machine_schema::{
-    valid_identifier, Diagnostic, Dimension, MachineDoc, Quantity, SourceSpan, API_VERSION,
-    KIND_MACHINE,
+    valid_identifier, valid_package_ref_name, Diagnostic, Dimension, MachineDoc, Quantity,
+    SourceSpan, API_VERSION, KIND_MACHINE,
 };
 use dryer_package_model::PackageRef;
 use spans::SpanIndex;
@@ -149,6 +149,22 @@ fn validate(doc: &MachineDoc, index: &SpanIndex, out: &mut Vec<Diagnostic>) {
                     .at(format!("{section}.{key}")),
                 );
             }
+        }
+    }
+
+    // --- workflow package references (E05xx) ---
+    for (workflow_name, workflow) in &doc.workflows {
+        if !valid_package_ref_name(workflow.as_str()) {
+            push(
+                Diagnostic::error(
+                    "E0500",
+                    format!(
+                        "workflow '{workflow_name}' references invalid package '{}'",
+                        workflow.as_str()
+                    ),
+                )
+                .at(format!("workflows.{workflow_name}")),
+            );
         }
     }
 
@@ -366,6 +382,33 @@ safety:
         let o = parse_str(yaml);
         assert!(o.doc.is_none());
         assert_eq!(o.diagnostics[0].code, "E0100");
+    }
+
+    #[test]
+    fn workflows_must_reference_package_paths() {
+        let yaml = r#"
+api_version: dryer.machine/v0.1
+kind: Machine
+metadata:
+  name: t
+controllers:
+  mainboard:
+    board: boards/example
+    transport: { type: usb }
+components: {}
+kinematics:
+  type: cartesian
+workflows:
+  home: workflows/default@print
+safety:
+  profile: safety-profiles/desktop-fdm
+"#;
+        let o = parse_str(yaml);
+        assert_eq!(
+            errors(&o),
+            vec!["E0500".to_string()],
+            "bad workflow refs should report package-name validation error"
+        );
     }
 
     #[test]

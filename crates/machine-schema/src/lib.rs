@@ -404,7 +404,7 @@ pub struct MachineDoc {
     pub kinematics: Kinematics,
     pub safety: Safety,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub workflows: BTreeMap<String, String>,
+    pub workflows: BTreeMap<String, WorkflowRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub calibration: Option<Calibration>,
 }
@@ -470,6 +470,28 @@ pub struct Safety {
 pub struct Calibration {
     /// Machine-local calibration file; never embedded in packages (§5.6).
     pub source: String,
+}
+
+/// Workflow package references in a machine document.
+///
+/// Represented as plain strings (e.g. `workflows/default-print-start`) to keep
+/// machine documents package-agnostic while still typing this section explicitly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WorkflowRef(pub String);
+
+impl WorkflowRef {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Validate a `namespace/name` package reference fragment (no version).
+pub fn valid_package_ref_name(raw: &str) -> bool {
+    let Some((namespace, name)) = raw.split_once('/') else {
+        return false;
+    };
+    valid_identifier(namespace) && valid_identifier(name)
 }
 
 #[cfg(test)]
@@ -613,5 +635,14 @@ safety:
             doc2.components["x_motor"].attributes["role"],
             serde_yaml::Value::String("axis.x".into())
         );
+    }
+
+    #[test]
+    fn workflow_package_name_validation_matches_machine_identifiers() {
+        assert!(valid_package_ref_name("workflows/print-start"));
+        assert!(!valid_package_ref_name("workflows"));
+        assert!(!valid_package_ref_name("bad@1/workflows"));
+        assert!(!valid_package_ref_name("bad space/foo"));
+        assert!(!valid_package_ref_name("bad//name"));
     }
 }

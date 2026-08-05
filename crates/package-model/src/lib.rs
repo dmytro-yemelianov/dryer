@@ -722,7 +722,10 @@ mod tests {
             .find("workflows", "print-start")
             .expect("workflow fixture package");
         assert_eq!(workflow.kind, PackageKind::Workflow);
-        assert_eq!(workflow.reference.to_string(), "workflows/print-start@1.0.0");
+        assert_eq!(
+            workflow.reference.to_string(),
+            "workflows/print-start@1.0.0"
+        );
     }
 
     #[test]
