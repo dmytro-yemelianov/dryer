@@ -39,6 +39,10 @@ VirtualClock ──► SimTransport ──► SimController ──► TraceLog
   response queue, and a checked integer controller clock anchored by host/controller
   epochs plus signed rate offset. The host drives send and receive ticks explicitly;
   the endpoint performs no wall-clock reads, OS I/O, or client session policy.
+- **SimClockCluster**: deterministic routing for multiple independent clock
+  endpoints. Controller identity stays in this transport layer, so sequence values
+  may be reused independently by each controller without changing the wire ABI;
+  link faults remain isolated per controller.
 - **SimController**: bounded command queue with reported capacity, fill level, and
   earliest/latest accepted timestamps (§16.4). `send_scheduled` commands are
   validated when they arrive (transport latency consumes lead time), rejected when

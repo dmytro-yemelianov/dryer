@@ -17,8 +17,10 @@ pub use dryer_control_protocol::{Command, CommandEnvelope, Tick};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+mod clock_cluster;
 mod clock_transport;
 
+pub use clock_cluster::{ControllerId, SimClockCluster, SimClockClusterError};
 pub use clock_transport::{
     ClockLinkConfig, ClockTransportConfig, ClockTransportConfigError, ControllerClock,
     ControllerClockError, SimClockFrame, SimClockTransport, SimClockTransportError,
