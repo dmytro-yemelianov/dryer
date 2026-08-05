@@ -31,9 +31,9 @@ impl<'a> PackageSelection<'a> {
             .controllers
             .values()
             .map(|controller| controller.board.clone())
-            .filter(|board| board.contains('/'))
+            .filter(|board| dryer_machine_schema::valid_package_ref_name(board))
             .collect();
-        if doc.safety.profile.contains('/') {
+        if dryer_machine_schema::valid_package_ref_name(&doc.safety.profile) {
             implicit_roots.insert(doc.safety.profile.clone());
         }
 

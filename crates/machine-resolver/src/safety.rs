@@ -14,7 +14,7 @@ pub(super) fn validate(
     packages: &PackageSelection<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<SafetyProfileFile> {
-    if !doc.safety.profile.contains('/') {
+    if !dryer_machine_schema::valid_package_ref_name(&doc.safety.profile) {
         diagnostics.push(
             Diagnostic::error(
                 "E1500",
@@ -114,6 +114,7 @@ pub(super) fn validate(
             .attributes
             .get("sensor")
             .and_then(|value| value.as_str())
+            .filter(|name| !name.trim().is_empty())
         else {
             diagnostics.push(
                 Diagnostic::error(
@@ -157,11 +158,14 @@ pub(super) fn validate(
             );
             continue;
         }
-        for target in targets {
-            let controller = target.0.split_once('.').map(|(name, _)| name);
-            if controller.is_some_and(|controller| {
-                sensor_resource_on_controller(resolved, comp, controller).is_none()
-            }) {
+        let mut checked_controllers = std::collections::BTreeSet::new();
+        for target in &targets {
+            let Some((controller, _)) = target.0.split_once('.') else {
+                continue;
+            };
+            if checked_controllers.insert(controller)
+                && sensor_resource_on_controller(resolved, comp, controller).is_none()
+            {
                 diagnostics.push(
                     Diagnostic::error(
                         "E1504",

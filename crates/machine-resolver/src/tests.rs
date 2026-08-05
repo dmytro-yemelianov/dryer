@@ -898,3 +898,28 @@ fn a_sensorless_heater_violates_the_profile() {
     let d = o.diagnostics.iter().find(|d| d.code == "E1502").unwrap();
     assert!(d.message.contains("hotend_heater"));
 }
+
+#[test]
+fn invalid_safety_profile_name_syntax_emits_e1500() {
+    let bad = fixture().replace(
+        "profile: safety-profiles/desktop-fdm",
+        "profile: invalid_profile_without_slash",
+    );
+    let o = resolve_source(&bad, &registry());
+    assert!(!o.is_ok());
+    let d = o.diagnostics.iter().find(|d| d.code == "E1500").unwrap();
+    assert!(d.message.contains("must be 'namespace/name'"));
+}
+
+#[test]
+fn unpinned_safety_profile_name_with_invalid_chars_emits_e1500() {
+    let bad = fixture().replace(
+        "profile: safety-profiles/desktop-fdm",
+        "profile: bad space/desktop-fdm",
+    );
+    let o = resolve_source(&bad, &registry());
+    assert!(!o.is_ok());
+    let d = o.diagnostics.iter().find(|d| d.code == "E1500").unwrap();
+    assert!(d.message.contains("must be 'namespace/name'"));
+}
+

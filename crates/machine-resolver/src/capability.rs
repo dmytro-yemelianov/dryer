@@ -25,6 +25,12 @@ pub(super) fn safety_target_resources(
             else {
                 return Ok(Vec::new());
             };
+            let driver = driver.trim();
+            if driver.is_empty() {
+                return Err(format!(
+                    "component '{component_name}' driver attribute cannot be empty"
+                ));
+            }
             let Some(assignments) = resolved
                 .assignments
                 .get(driver)
