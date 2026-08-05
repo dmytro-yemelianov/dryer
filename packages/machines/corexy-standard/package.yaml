@@ -1,0 +1,21 @@
+package:
+  namespace: machines
+  name: corexy-standard
+  version: 1.0.0
+  kind: machine
+
+template:
+  components:
+    x_driver:
+      type: tmc2209
+    y_driver:
+      type: tmc2209
+    z_driver:
+      type: tmc2209
+
+  kinematics:
+    type: corexy
+    limits:
+      max_velocity: 300 mm/s
+      max_acceleration: 5000 mm/s2
+      max_z_velocity: 15 mm/s

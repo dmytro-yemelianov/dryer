@@ -1,0 +1,20 @@
+package:
+  namespace: machines
+  name: delta-basic
+  version: 1.0.0
+  kind: machine
+
+template:
+  components:
+    tower_a:
+      type: tmc2209
+    tower_b:
+      type: tmc2209
+    tower_c:
+      type: tmc2209
+
+  kinematics:
+    type: delta
+    limits:
+      max_velocity: 250 mm/s
+      max_acceleration: 3000 mm/s2

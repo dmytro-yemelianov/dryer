@@ -1,0 +1,23 @@
+package:
+  namespace: machines
+  name: toolchanger-corexy
+  version: 1.0.0
+  kind: machine
+
+template:
+  components:
+    x_driver:
+      type: tmc2209
+    y_driver:
+      type: tmc2209
+    z_driver:
+      type: tmc2209
+    coupler_driver:
+      type: tmc2209
+
+  kinematics:
+    type: corexy
+    limits:
+      max_velocity: 350 mm/s
+      max_acceleration: 6000 mm/s2
+      max_z_velocity: 20 mm/s

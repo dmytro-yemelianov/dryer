@@ -1060,3 +1060,32 @@ fn workflow_step_calling_unsupported_action_emits_e1704() {
     );
 }
 
+#[test]
+fn corexy_delta_and_toolchanger_templates_resolve_cleanly() {
+    let reg = registry();
+
+    // 1. CoreXY template machine
+    let corexy_src = fixture().replace(
+        "class: cartesian-basic",
+        "class: corexy-standard",
+    );
+    let o = resolve_source(&corexy_src, &reg);
+    assert!(o.is_ok(), "corexy resolution diagnostics: {:?}", o.diagnostics);
+
+    // 2. Delta template machine
+    let delta_src = fixture().replace(
+        "class: cartesian-basic",
+        "class: delta-basic",
+    );
+    let o = resolve_source(&delta_src, &reg);
+    assert!(o.is_ok(), "delta resolution diagnostics: {:?}", o.diagnostics);
+
+    // 3. Toolchanger template machine
+    let toolchanger_src = fixture().replace(
+        "class: cartesian-basic",
+        "class: toolchanger-corexy",
+    );
+    let o = resolve_source(&toolchanger_src, &reg);
+    assert!(o.is_ok(), "toolchanger resolution diagnostics: {:?}", o.diagnostics);
+}
+
