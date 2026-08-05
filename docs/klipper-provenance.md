@@ -79,5 +79,17 @@ Options for the owner to choose (not needed for Phase 1):
 - [ ] Owner selects a Phase-2 protocol option (1/2/3) — may be deferred
 - Approved on: ____ · By: ____
 
+## Pre-flight artifacts for roadmap step 8
+
+- [ ] This file has a single approver signature with date, scope, and option
+  selected in the section above.
+- [ ] A compliance note identifies every Klipper data source consulted before
+  implementation begins, with per-source date/version and intended derivation.
+- [ ] A legal review sign-off exists for the selected path.
+- [ ] A clean-room boundary (if applicable) is in place and documented before
+  implementation begins.
+- [ ] A `forge export klipper` dry run target is defined in terms of Dryer-native
+  Machine Graph artifacts only (no verbatim protocol/config tables).
+
 Until both the policy box is checked and this file's Status line is changed to
 **Approved**, roadmap step 8 stays blocked.
