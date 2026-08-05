@@ -1,0 +1,23 @@
+package:
+  namespace: workflows
+  name: print-start
+  version: 1.0.0
+  kind: workflow
+api_version: forge.workflow/v0.1
+parameters:
+  bed_temperature:
+    type: temperature
+steps:
+  - call: heater.set_target
+    with:
+      bed: true
+on_cancel:
+  - call: motion.stop
+    with:
+      immediate: true
+requires:
+  capabilities:
+    - heater.set_target
+    - motion.home
+locks:
+  - mainboard.heater0
