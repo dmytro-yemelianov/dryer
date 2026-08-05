@@ -208,6 +208,10 @@ tests exist and pass, not that a type was declared.
   hardware flashing trait + `MockFlashExecutor` in `dryer-firmware-flash`, and an end-to-end
   workflow lowering, pre-flight audit, wire encoding, and simulator job execution integration
   test suite (`e2e_job_execution.rs`).
+  Slice 26 adds `dryer-cli` (`crates/dryer-cli`), providing a unified command-line tool for
+  document checking (`dryer check`), canonical lockfile generation (`dryer lock`), USB discovery
+  and dry-run flash planning (`dryer flash-plan`), pre-flight toolpath auditing (`dryer audit`),
+  and job execution simulation (`dryer sim`).
 - [x] **10. Cross-platform flash discovery and dry-run plans** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies
