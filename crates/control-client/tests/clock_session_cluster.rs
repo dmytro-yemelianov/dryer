@@ -77,3 +77,158 @@ fn session_round_trips_through_a_routed_controller_clock() {
     assert_eq!(completed.sample.controller_send.0, 6_110);
     assert!(completed.estimate.is_none());
 }
+
+#[test]
+fn session_tracks_drift_per_controller_in_one_cluster() {
+    let fast_clock = ControllerClock::new(0, 5_000, 1_000).unwrap();
+    let slow_clock = ControllerClock::new(0, 10_000, -500).unwrap();
+    let mut cluster = SimClockCluster::new([
+        (
+            1,
+            ClockTransportConfig {
+                request: dryer_simulator::ClockLinkConfig {
+                    latency_ticks: 0,
+                    ..dryer_simulator::ClockLinkConfig::default()
+                },
+                response: dryer_simulator::ClockLinkConfig {
+                    latency_ticks: 0,
+                    ..dryer_simulator::ClockLinkConfig::default()
+                },
+                processing_ticks: 0,
+                controller_clock: fast_clock,
+                ..ClockTransportConfig::default()
+            },
+        ),
+        (
+            2,
+            ClockTransportConfig {
+                request: dryer_simulator::ClockLinkConfig {
+                    latency_ticks: 0,
+                    ..dryer_simulator::ClockLinkConfig::default()
+                },
+                response: dryer_simulator::ClockLinkConfig {
+                    latency_ticks: 0,
+                    ..dryer_simulator::ClockLinkConfig::default()
+                },
+                processing_ticks: 0,
+                controller_clock: slow_clock,
+                ..ClockTransportConfig::default()
+            },
+        ),
+    ])
+    .unwrap();
+
+    let mut fast_session = ClockSession::new(2_000, 1_000).unwrap();
+    let mut fast_clock_host = ScriptClock {
+        ticks: vec![
+            HostTick(1_000_000),
+            HostTick(1_000_000),
+            HostTick(3_000_000),
+            HostTick(3_000_000),
+        ],
+    };
+    let fast_completed = {
+        let mut sink = ClusterSink {
+            cluster: &mut cluster,
+            controller: 1,
+            host_send: 1_000_000,
+        };
+        let receipt = fast_session.begin(&mut sink, &mut fast_clock_host).unwrap();
+        let response = sink
+            .cluster
+            .receive_due(1, 1_000_000)
+            .unwrap()
+            .expect("response is due");
+        let completed = fast_session
+            .accept_response(response.as_bytes(), &mut fast_clock_host)
+            .unwrap();
+        assert_eq!(receipt.sequence, 0);
+        completed
+    };
+    assert!(fast_completed.estimate.is_none());
+
+    let fast_completed = {
+        let mut sink = ClusterSink {
+            cluster: &mut cluster,
+            controller: 1,
+            host_send: 3_000_000,
+        };
+        let receipt = fast_session.begin(&mut sink, &mut fast_clock_host).unwrap();
+        let response = sink
+            .cluster
+            .receive_due(1, 3_000_000)
+            .unwrap()
+            .expect("response is due");
+        let completed = fast_session
+            .accept_response(response.as_bytes(), &mut fast_clock_host)
+            .unwrap();
+        assert_eq!(receipt.sequence, 1);
+        completed
+    };
+    let fast_estimate = fast_completed.estimate.unwrap();
+    assert_eq!(fast_completed.sample.host_send, HostTick(3_000_000));
+    assert_eq!(fast_completed.sample.host_receive, HostTick(3_000_000));
+    assert_eq!(fast_completed.sample.controller_receive, fast_clock.at(3_000_000).unwrap());
+    assert_eq!(fast_completed.sample.controller_send, fast_clock.at(3_000_000).unwrap());
+    assert_eq!(fast_estimate.drift.ppb, 1_000);
+    assert_eq!(fast_estimate.drift.min_ppb, 1_000);
+    assert_eq!(fast_estimate.drift.max_ppb, 1_000);
+
+    let mut slow_session = ClockSession::new(2_000, 1_000).unwrap();
+    let mut slow_clock_host = ScriptClock {
+        ticks: vec![
+            HostTick(1_000_000),
+            HostTick(1_000_000),
+            HostTick(3_000_000),
+            HostTick(3_000_000),
+        ],
+    };
+    let _slow_first = {
+        let mut sink = ClusterSink {
+            cluster: &mut cluster,
+            controller: 2,
+            host_send: 1_000_000,
+        };
+        let receipt = slow_session.begin(&mut sink, &mut slow_clock_host).unwrap();
+        let response = sink
+            .cluster
+            .receive_due(2, 1_000_000)
+            .unwrap()
+            .expect("response is due");
+        let completed = slow_session
+            .accept_response(response.as_bytes(), &mut slow_clock_host)
+            .unwrap();
+        assert_eq!(receipt.sequence, 0);
+        completed
+    };
+
+    let slow_completed = {
+        let mut sink = ClusterSink {
+            cluster: &mut cluster,
+            controller: 2,
+            host_send: 3_000_000,
+        };
+        let receipt = slow_session.begin(&mut sink, &mut slow_clock_host).unwrap();
+        let response = sink
+            .cluster
+            .receive_due(2, 3_000_000)
+            .unwrap()
+            .expect("response is due");
+        let completed = slow_session
+            .accept_response(response.as_bytes(), &mut slow_clock_host)
+            .unwrap();
+        assert_eq!(receipt.sequence, 1);
+        completed
+    };
+    let slow_estimate = slow_completed.estimate.unwrap();
+    assert_eq!(slow_completed.sample.host_send, HostTick(3_000_000));
+    assert_eq!(slow_completed.sample.host_receive, HostTick(3_000_000));
+    assert_eq!(
+        slow_completed.sample.controller_receive,
+        slow_clock.at(3_000_000).unwrap()
+    );
+    assert_eq!(slow_completed.sample.controller_send, slow_clock.at(3_000_000).unwrap());
+    assert_eq!(slow_estimate.drift.ppb, -500);
+    assert_eq!(slow_estimate.drift.min_ppb, -500);
+    assert_eq!(slow_estimate.drift.max_ppb, -500);
+}
