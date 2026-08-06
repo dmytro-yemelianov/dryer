@@ -61,6 +61,124 @@ fn rig_from_resolution() -> (SimController, String) {
     (sim, heater_name)
 }
 
+/// Same idea as `rig_from_resolution`, but pointed at the CoreXY example,
+/// which has two motor axes (x, y) instead of cartesian's one.
+fn rig_from_corexy_resolution() -> (SimController, String) {
+    let root = repo_root();
+    let source = std::fs::read_to_string(root.join("examples/corexy/machine.yaml")).unwrap();
+    let registry = LocalRegistry::load(&root.join("packages"));
+    let outcome = dryer_machine_resolver::resolve_source(&source, &registry);
+    assert!(
+        outcome.is_ok(),
+        "fixture resolves: {:#?}",
+        outcome.diagnostics
+    );
+
+    let resolved = outcome.resolved.unwrap();
+    let lock = dryer_machine_lock::lock(&source, &registry, &resolved).unwrap();
+    let artifact = dryer_firmware_build::compile_controller(&lock, "mainboard").unwrap();
+
+    let mut heaters = Vec::new();
+    let mut heater_name = String::new();
+    for state in &artifact.states {
+        if state.class != "heater" {
+            continue;
+        }
+        heater_name = state.component.clone();
+        heaters.push(HeaterCfg {
+            name: state.component.clone(),
+            gain_milli_c: 200_000,
+            tau_ms: 2_000,
+            safe_state: state.state.as_str().to_string(),
+            heartbeat_timeout: state.heartbeat_timeout_us,
+        });
+    }
+    assert!(!heaters.is_empty(), "fixture has a covered heater");
+
+    let sim = SimController::new(
+        25_000,
+        heaters,
+        vec![
+            AxisCfg {
+                name: "x".into(),
+                start_position_um: 5_000,
+            },
+            AxisCfg {
+                name: "y".into(),
+                start_position_um: 5_000,
+            },
+        ],
+    );
+    (sim, heater_name)
+}
+
+#[test]
+fn the_corexy_job_trace_matches_the_golden() {
+    let (mut sim, heater) = rig_from_corexy_resolution();
+    let mut tx = SimTransport::new(TransportConfig::default());
+
+    // The job: home X, home Y, heat to 60 °C, then a 2 mm X move — with
+    // heartbeats every 100 ms for the whole run.
+    tx.send(0, Command::Heartbeat);
+    tx.send(
+        0,
+        Command::Home {
+            axis: "x".into(),
+            rate_um_s: 10_000,
+        },
+    );
+    tx.send(
+        0,
+        Command::Home {
+            axis: "y".into(),
+            rate_um_s: 10_000,
+        },
+    );
+    tx.send(
+        0,
+        Command::SetHeaterTarget {
+            heater: heater.clone(),
+            target_milli_c: 60_000,
+        },
+    );
+    tx.send(
+        800 * TICKS_PER_MS,
+        Command::Move {
+            axis: "x".into(),
+            distance_um: 2_000,
+            rate_um_s: 10_000,
+        },
+    );
+    for ms in (0..2_000).step_by(100) {
+        tx.send(ms * TICKS_PER_MS, Command::Heartbeat);
+    }
+    sim.run(&mut tx, 2_000 * TICKS_PER_MS);
+
+    // The job semantics hold...
+    assert!(sim.heater_milli_c(&heater).unwrap() >= 60_000, "heated");
+    assert_eq!(sim.axis_position_um("x"), Some(2_000), "homed then moved");
+    assert_eq!(sim.axis_position_um("y"), Some(0), "homed");
+    assert!(sim.latched_fault().is_none());
+
+    // ...and the trace is the byte-stable golden.
+    let golden_path = repo_root().join("examples/corexy/job-trace.golden");
+    let actual = sim.trace.to_json_lines();
+    if std::env::var("UPDATE_TRACE").is_ok() {
+        std::fs::write(&golden_path, &actual).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&golden_path)
+        .expect("golden exists — regenerate with UPDATE_TRACE=1");
+    if expected != actual {
+        let g = Trace::from_json_lines(&expected).unwrap();
+        let i = sim.trace.first_divergence(&g);
+        panic!(
+            "trace drifted from the golden (first divergent event index: {i:?}).\n\
+             If the change is intended, regenerate with UPDATE_TRACE=1."
+        );
+    }
+}
+
 #[test]
 fn the_fixture_job_trace_matches_the_golden() {
     let (mut sim, heater) = rig_from_resolution();
