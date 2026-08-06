@@ -116,6 +116,106 @@ pub(super) fn load(
             },
         }
     }
+
+    // --- transport.parent structural checks (E1121/E1122) ---
+    // A second pass: the parent controller's board may sort after the
+    // child's in `doc.controllers` (a BTreeMap), so this only runs once
+    // every controller's board payload has been loaded above. Shape
+    // (`controller.port`) and "known controller" are already checked by
+    // the parser (E0502/E0503); a board that itself failed to load is
+    // already diagnosed above and is silently skipped here.
+    for (name, ctrl) in &doc.controllers {
+        let Some(parent) = &ctrl.transport.parent else {
+            continue;
+        };
+        let Some((pctrl, port)) = parent.split_once('.') else {
+            continue;
+        };
+        let Some(parent_board) = boards.get(pctrl) else {
+            continue;
+        };
+        match parent_board.downlinks.get(port) {
+            None => {
+                let available: Vec<&str> =
+                    parent_board.downlinks.keys().map(String::as_str).collect();
+                let mut d = Diagnostic::error(
+                    "E1121",
+                    format!(
+                        "controller '{name}': transport.parent '{parent}' names port '{port}', which board '{}' does not declare as a downlink",
+                        doc.controllers[pctrl].board
+                    ),
+                )
+                .at(format!("controllers.{name}.transport.parent"));
+                d = if available.is_empty() {
+                    d.suggest(format!(
+                        "'{}' declares no downlinks",
+                        doc.controllers[pctrl].board
+                    ))
+                } else {
+                    d.suggest(format!("available downlinks: {}", available.join(", ")))
+                };
+                diagnostics.push(d);
+            }
+            Some(downlink) if downlink.kind != ctrl.transport.kind => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1122",
+                        format!(
+                            "controller '{name}': transport type '{}' disagrees with parent downlink '{parent}' type '{}'",
+                            ctrl.transport.kind, downlink.kind
+                        ),
+                    )
+                    .at(format!("controllers.{name}.transport.type")),
+                );
+            }
+            Some(_) => {}
+        }
+    }
+
+    // --- controller parent cycles (E1123): whole-graph check ---
+    // Every controller has at most one parent, so a cycle is detected by
+    // walking each controller's parent chain until it either terminates
+    // (no `transport.parent`) or revisits a controller already seen on
+    // this walk (which also catches self-parenting on the first step).
+    // `reported` avoids emitting the same cycle once per member.
+    let mut reported: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for start in doc.controllers.keys() {
+        if reported.contains(start) {
+            continue;
+        }
+        let mut path = vec![start.clone()];
+        let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        seen.insert(start.as_str());
+        let mut current = start.as_str();
+        loop {
+            let Some(ctrl) = doc.controllers.get(current) else {
+                break;
+            };
+            let Some(parent) = &ctrl.transport.parent else {
+                break;
+            };
+            let Some((pctrl, _)) = parent.split_once('.') else {
+                break;
+            };
+            if !seen.insert(pctrl) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1123",
+                        format!(
+                            "controller '{start}': transport.parent chain cycles back through '{pctrl}'"
+                        ),
+                    )
+                    .at(format!("controllers.{start}.transport.parent")),
+                );
+                reported.extend(path.iter().cloned());
+                reported.insert(pctrl.to_string());
+                break;
+            }
+            path.push(pctrl.to_string());
+            current = pctrl;
+        }
+    }
+
     ControllerTargets {
         boards,
         chips,

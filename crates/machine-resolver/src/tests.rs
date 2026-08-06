@@ -29,6 +29,66 @@ fn registry_with_safety_fixture(fixture: &str) -> LocalRegistry {
     registry
 }
 
+fn registry_with_downlink_board() -> LocalRegistry {
+    let mut registry = registry();
+    let package = registry
+        .packages
+        .iter_mut()
+        .find(|package| package.reference.to_string() == "boards/example-mainboard@1.0.0")
+        .expect("example mainboard");
+    package.dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/mainboard-with-downlinks");
+    registry
+}
+
+fn two_controller_source(child_kind: &str, parent_ref: &str) -> String {
+    format!(
+        r#"api_version: dryer.machine/v0.1
+kind: Machine
+metadata:
+  name: two-controller-test
+packages:
+  - boards/example-mainboard@1.0.0
+  - devices/tmc2209@2.1.0
+  - machines/cartesian-basic@1.0.0
+controllers:
+  mainboard:
+    board: boards/example-mainboard
+    transport:
+      type: usb
+  child:
+    board: boards/example-mainboard
+    transport:
+      type: {child_kind}
+      parent: {parent_ref}
+components:
+  x_motor:
+    type: stepper_motor
+    driver: x_driver
+    role: axis.x
+  x_driver:
+    type: tmc2209
+    connected_to: mainboard.motor0
+  hotend_heater:
+    type: heater
+    output: mainboard.heater0
+    sensor: hotend_sensor
+    current: 2 A
+  hotend_sensor:
+    type: thermistor
+    model: generic-3950
+    input: mainboard.thermistor0
+kinematics:
+  type: cartesian
+  limits:
+    max_velocity: 300 mm/s
+    max_acceleration: 3000 mm/s^2
+safety:
+  profile: safety-profiles/desktop-fdm
+"#
+    )
+}
+
 fn registry_without_firmware_target() -> (LocalRegistry, std::path::PathBuf) {
     let mut registry = registry();
     let package = registry
@@ -220,6 +280,115 @@ fn unknown_transport_on_the_board_is_an_error() {
     let bad = fixture().replace("type: usb", "type: ethernet");
     let o = resolve_source(&bad, &registry());
     assert!(o.diagnostics.iter().any(|d| d.code == "E1120"));
+}
+
+#[test]
+fn transport_parent_naming_an_undeclared_downlink_is_e1121() {
+    // registry() alone: example-mainboard@1.0.0 declares no downlinks at all.
+    let src = two_controller_source("can", "mainboard.can0");
+    let o = resolve_source(&src, &registry());
+    let d = o
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "E1121")
+        .expect("E1121 diagnostic");
+    assert!(d.message.contains("can0"));
+    assert!(d.message.contains("boards/example-mainboard"));
+}
+
+#[test]
+fn transport_type_disagreeing_with_parent_downlink_is_e1122_not_e1121() {
+    let src = two_controller_source("usb", "mainboard.can0");
+    let o = resolve_source(&src, &registry_with_downlink_board());
+    assert!(
+        !o.diagnostics.iter().any(|d| d.code == "E1121"),
+        "port exists on the board, E1121 must not fire: {:?}",
+        o.diagnostics
+    );
+    let d = o
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "E1122")
+        .expect("E1122 diagnostic");
+    assert!(d.message.contains("usb"));
+    assert!(d.message.contains("can"));
+}
+
+#[test]
+fn matching_downlink_port_and_type_raises_neither_e1121_nor_e1122() {
+    let src = two_controller_source("can", "mainboard.can0");
+    let o = resolve_source(&src, &registry_with_downlink_board());
+    assert!(
+        !o.diagnostics
+            .iter()
+            .any(|d| d.code == "E1121" || d.code == "E1122"),
+        "matching port+type must raise neither: {:?}",
+        o.diagnostics
+    );
+}
+
+#[test]
+fn self_parenting_controller_is_e1123() {
+    // child's own transport.parent points at itself.
+    let src = two_controller_source("can", "child.can0");
+    let o = resolve_source(&src, &registry_with_downlink_board());
+    let d = o
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "E1123")
+        .expect("E1123 diagnostic for self-parenting");
+    assert!(d.message.contains("child"));
+}
+
+#[test]
+fn mutual_parent_cycle_is_e1123() {
+    let src = r#"api_version: dryer.machine/v0.1
+kind: Machine
+metadata:
+  name: cycle-test
+packages:
+  - boards/example-mainboard@1.0.0
+  - devices/tmc2209@2.1.0
+  - machines/cartesian-basic@1.0.0
+controllers:
+  a:
+    board: boards/example-mainboard
+    transport:
+      type: can
+      parent: b.can0
+  b:
+    board: boards/example-mainboard
+    transport:
+      type: can
+      parent: a.can0
+components:
+  x_motor:
+    type: stepper_motor
+    driver: x_driver
+    role: axis.x
+  x_driver:
+    type: tmc2209
+    connected_to: a.motor0
+  hotend_heater:
+    type: heater
+    output: a.heater0
+    sensor: hotend_sensor
+    current: 2 A
+  hotend_sensor:
+    type: thermistor
+    model: generic-3950
+    input: a.thermistor0
+kinematics:
+  type: cartesian
+  limits:
+    max_velocity: 300 mm/s
+    max_acceleration: 3000 mm/s^2
+safety:
+  profile: safety-profiles/desktop-fdm
+"#;
+    let o = resolve_source(src, &registry_with_downlink_board());
+    let cycles: Vec<_> = o.diagnostics.iter().filter(|d| d.code == "E1123").collect();
+    assert_eq!(cycles.len(), 1, "one cycle reported once, not twice: {:?}", o.diagnostics);
 }
 
 /// Search-based allocation: a tmc2209 with no explicit claim gets the
