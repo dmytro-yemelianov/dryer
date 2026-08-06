@@ -218,7 +218,8 @@ impl MultiControllerClockSync {
 
     pub fn add_controller(&mut self, name: &str) -> Result<(), ClockSyncError> {
         let session = ClockSession::new(self.max_slew_ppb, self.timeout_ticks)?;
-        self.sessions.insert(alloc::string::String::from(name), session);
+        self.sessions
+            .insert(alloc::string::String::from(name), session);
         Ok(())
     }
 

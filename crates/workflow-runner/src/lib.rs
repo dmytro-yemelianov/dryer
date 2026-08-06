@@ -6,8 +6,8 @@
 //! session status (queue capacity and fill level), dynamically dispatches scheduled commands
 //! to maintain queue horizon without underrun, and tracks completion.
 
-use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 
 pub use dryer_control_client::{CommandClient, FrameSink, SendError, SendReceipt};
 pub use dryer_control_protocol::{Command, CommandEnvelope, Tick};
@@ -194,7 +194,7 @@ impl WorkflowRunner {
     /// If an auditor is attached, the command is audited before enqueuing.
     pub fn enqueue(&mut self, envelope: CommandEnvelope) -> Result<(), RunnerError> {
         if let Some(ref auditor) = self.auditor {
-            let report = auditor.audit(&[envelope.command.clone()]);
+            let report = auditor.audit(std::slice::from_ref(&envelope.command));
             if !report.passed {
                 return Err(RunnerError::AuditFailed(report));
             }
@@ -269,7 +269,9 @@ impl WorkflowRunner {
             && self.state != RunnerState::UnderrunWarning
         {
             self.state = RunnerState::Completed;
-        } else if self.state == RunnerState::Throttled && status.queue_fill < self.config.target_horizon {
+        } else if self.state == RunnerState::Throttled
+            && status.queue_fill < self.config.target_horizon
+        {
             self.state = RunnerState::Running;
         }
 
@@ -287,28 +289,31 @@ impl WorkflowRunner {
         if self.job_queue.is_empty() {
             if self.total_completed == self.total_dispatched && self.total_dispatched > 0 {
                 self.state = RunnerState::Completed;
-            } else if self.state != RunnerState::Faulted && self.state != RunnerState::UnderrunWarning {
+            } else if self.state != RunnerState::Faulted
+                && self.state != RunnerState::UnderrunWarning
+            {
                 self.state = RunnerState::Idle;
             }
             return Vec::new();
         }
 
         // Determine capacity limits from controller status or config defaults
-        let (capacity, fill, earliest_accepted, latest_accepted) = match &self.last_controller_status {
-            Some(status) => {
-                if !status.heartbeat_ok {
-                    self.state = RunnerState::Faulted;
-                    return Vec::new();
+        let (capacity, fill, earliest_accepted, latest_accepted) =
+            match &self.last_controller_status {
+                Some(status) => {
+                    if !status.heartbeat_ok {
+                        self.state = RunnerState::Faulted;
+                        return Vec::new();
+                    }
+                    (
+                        status.queue_capacity,
+                        status.queue_fill,
+                        status.earliest_accepted_tick,
+                        status.latest_accepted_tick,
+                    )
                 }
-                (
-                    status.queue_capacity,
-                    status.queue_fill,
-                    status.earliest_accepted_tick,
-                    status.latest_accepted_tick,
-                )
-            }
-            None => (self.config.target_horizon, 0, 0, 0),
-        };
+                None => (self.config.target_horizon, 0, 0, 0),
+            };
 
         let target_horizon = self.config.target_horizon.min(capacity);
 
@@ -358,9 +363,9 @@ impl WorkflowRunner {
 
         self.total_dispatched += batch.len();
 
-        if self.state == RunnerState::Throttled && fill < target_horizon {
-            self.state = RunnerState::Running;
-        } else if self.state != RunnerState::UnderrunWarning && self.state != RunnerState::Faulted {
+        if (self.state == RunnerState::Throttled && fill < target_horizon)
+            || (self.state != RunnerState::UnderrunWarning && self.state != RunnerState::Faulted)
+        {
             self.state = RunnerState::Running;
         }
 

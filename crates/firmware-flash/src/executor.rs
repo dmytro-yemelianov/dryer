@@ -1,6 +1,4 @@
-use crate::{
-    sha256, FlashExecutionError, FlashExecutor, FlashPlan, FlashResult, MatchStatus,
-};
+use crate::{sha256, FlashExecutionError, FlashExecutor, FlashPlan, FlashResult, MatchStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -132,12 +130,13 @@ pub fn generate_command(
             args
         }
         FlashToolMethod::Stm32Flash => {
-            let mut args = Vec::new();
-            args.push("-w".to_string());
-            args.push(artifact_str);
-            args.push("-v".to_string());
-            args.push("-g".to_string());
-            args.push("0x0".to_string());
+            let mut args = vec![
+                "-w".to_string(),
+                artifact_str,
+                "-v".to_string(),
+                "-g".to_string(),
+                "0x0".to_string(),
+            ];
             if let Some(cand) = candidate {
                 if is_serial_port(&cand.location) {
                     args.push(cand.location.clone());
@@ -288,24 +287,17 @@ impl FlashExecutor for NativeFlashExecutor {
                 if sha256(&content) == plan.artifact.expected_sha256 {
                     (existing_file.to_path_buf(), None)
                 } else {
-                    let temp_path = create_temp_artifact(
-                        artifact_bytes,
-                        self.custom_temp_dir.as_deref(),
-                    )?;
+                    let temp_path =
+                        create_temp_artifact(artifact_bytes, self.custom_temp_dir.as_deref())?;
                     (temp_path.clone(), Some(temp_path))
                 }
             } else {
-                let temp_path = create_temp_artifact(
-                    artifact_bytes,
-                    self.custom_temp_dir.as_deref(),
-                )?;
+                let temp_path =
+                    create_temp_artifact(artifact_bytes, self.custom_temp_dir.as_deref())?;
                 (temp_path.clone(), Some(temp_path))
             }
         } else {
-            let temp_path = create_temp_artifact(
-                artifact_bytes,
-                self.custom_temp_dir.as_deref(),
-            )?;
+            let temp_path = create_temp_artifact(artifact_bytes, self.custom_temp_dir.as_deref())?;
             (temp_path.clone(), Some(temp_path))
         };
 
@@ -313,8 +305,14 @@ impl FlashExecutor for NativeFlashExecutor {
         let flash_cmd = generate_command(method, plan, &artifact_path, binary_override)?;
 
         let mut execution_log = Vec::new();
-        execution_log.push(format!("verified checksum {}", plan.artifact.expected_sha256));
-        execution_log.push(format!("generated tool command: {}", flash_cmd.display_command()));
+        execution_log.push(format!(
+            "verified checksum {}",
+            plan.artifact.expected_sha256
+        ));
+        execution_log.push(format!(
+            "generated tool command: {}",
+            flash_cmd.display_command()
+        ));
 
         let result = if self.dry_run {
             execution_log.push(format!(
@@ -461,19 +459,49 @@ mod tests {
 
     #[test]
     fn test_flash_tool_method_parsing() {
-        assert_eq!("dfu".parse::<FlashToolMethod>().unwrap(), FlashToolMethod::DfuUtil);
-        assert_eq!("dfu-util".parse::<FlashToolMethod>().unwrap(), FlashToolMethod::DfuUtil);
-        assert_eq!("dfu_util".parse::<FlashToolMethod>().unwrap(), FlashToolMethod::DfuUtil);
+        assert_eq!(
+            "dfu".parse::<FlashToolMethod>().unwrap(),
+            FlashToolMethod::DfuUtil
+        );
+        assert_eq!(
+            "dfu-util".parse::<FlashToolMethod>().unwrap(),
+            FlashToolMethod::DfuUtil
+        );
+        assert_eq!(
+            "dfu_util".parse::<FlashToolMethod>().unwrap(),
+            FlashToolMethod::DfuUtil
+        );
 
-        assert_eq!("stm32flash".parse::<FlashToolMethod>().unwrap(), FlashToolMethod::Stm32Flash);
-        assert_eq!("stm32_flash".parse::<FlashToolMethod>().unwrap(), FlashToolMethod::Stm32Flash);
-        assert_eq!("stm32".parse::<FlashToolMethod>().unwrap(), FlashToolMethod::Stm32Flash);
+        assert_eq!(
+            "stm32flash".parse::<FlashToolMethod>().unwrap(),
+            FlashToolMethod::Stm32Flash
+        );
+        assert_eq!(
+            "stm32_flash".parse::<FlashToolMethod>().unwrap(),
+            FlashToolMethod::Stm32Flash
+        );
+        assert_eq!(
+            "stm32".parse::<FlashToolMethod>().unwrap(),
+            FlashToolMethod::Stm32Flash
+        );
 
-        assert_eq!("bossac".parse::<FlashToolMethod>().unwrap(), FlashToolMethod::Bossac);
-        assert_eq!("bossa".parse::<FlashToolMethod>().unwrap(), FlashToolMethod::Bossac);
+        assert_eq!(
+            "bossac".parse::<FlashToolMethod>().unwrap(),
+            FlashToolMethod::Bossac
+        );
+        assert_eq!(
+            "bossa".parse::<FlashToolMethod>().unwrap(),
+            FlashToolMethod::Bossac
+        );
 
-        assert_eq!("picotool".parse::<FlashToolMethod>().unwrap(), FlashToolMethod::Picotool);
-        assert_eq!("pico".parse::<FlashToolMethod>().unwrap(), FlashToolMethod::Picotool);
+        assert_eq!(
+            "picotool".parse::<FlashToolMethod>().unwrap(),
+            FlashToolMethod::Picotool
+        );
+        assert_eq!(
+            "pico".parse::<FlashToolMethod>().unwrap(),
+            FlashToolMethod::Picotool
+        );
 
         assert!(matches!(
             "invalid_method".parse::<FlashToolMethod>(),
@@ -492,7 +520,10 @@ mod tests {
 
         assert_eq!(cmd.tool, FlashToolMethod::DfuUtil);
         assert_eq!(cmd.program, "dfu-util");
-        assert_eq!(cmd.args, vec!["-d", "1209:d003", "-S", "SER123", "-D", "fw.bin", "-R"]);
+        assert_eq!(
+            cmd.args,
+            vec!["-d", "1209:d003", "-S", "SER123", "-D", "fw.bin", "-R"]
+        );
     }
 
     #[test]
@@ -506,7 +537,10 @@ mod tests {
 
         assert_eq!(cmd.tool, FlashToolMethod::Stm32Flash);
         assert_eq!(cmd.program, "stm32flash");
-        assert_eq!(cmd.args, vec!["-w", "fw.bin", "-v", "-g", "0x0", "/dev/ttyUSB0"]);
+        assert_eq!(
+            cmd.args,
+            vec!["-w", "fw.bin", "-v", "-g", "0x0", "/dev/ttyUSB0"]
+        );
     }
 
     #[test]
@@ -520,7 +554,10 @@ mod tests {
 
         assert_eq!(cmd.tool, FlashToolMethod::Bossac);
         assert_eq!(cmd.program, "bossac");
-        assert_eq!(cmd.args, vec!["-p", "/dev/ttyACM0", "-e", "-w", "-v", "-b", "-R", "fw.bin"]);
+        assert_eq!(
+            cmd.args,
+            vec!["-p", "/dev/ttyACM0", "-e", "-w", "-v", "-b", "-R", "fw.bin"]
+        );
     }
 
     #[test]
@@ -534,7 +571,10 @@ mod tests {
 
         assert_eq!(cmd.tool, FlashToolMethod::Picotool);
         assert_eq!(cmd.program, "picotool");
-        assert_eq!(cmd.args, vec!["load", "--bus", "1", "--address", "4", "fw.uf2", "-x", "-v"]);
+        assert_eq!(
+            cmd.args,
+            vec!["load", "--bus", "1", "--address", "4", "fw.uf2", "-x", "-v"]
+        );
     }
 
     #[test]
@@ -543,16 +583,17 @@ mod tests {
         let dev = make_test_device(1, None, "loc1");
         let plan = make_test_plan("dfu", dev, payload);
 
-        let mut executor = NativeFlashExecutor::dry_run().with_binary_override(
-            FlashToolMethod::DfuUtil,
-            "/usr/local/bin/custom-dfu-util",
-        );
+        let mut executor = NativeFlashExecutor::dry_run()
+            .with_binary_override(FlashToolMethod::DfuUtil, "/usr/local/bin/custom-dfu-util");
 
         let result = executor.execute_flash(&plan, payload).unwrap();
         assert!(result.success);
         assert_eq!(result.controller_id, "mainboard");
         assert_eq!(result.bytes_written, payload.len());
-        assert!(result.execution_log.iter().any(|line| line.contains("/usr/local/bin/custom-dfu-util")));
+        assert!(result
+            .execution_log
+            .iter()
+            .any(|line| line.contains("/usr/local/bin/custom-dfu-util")));
     }
 
     #[test]

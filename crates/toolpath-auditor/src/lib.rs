@@ -3,8 +3,8 @@
 //! Validates sequences of control commands against machine kinematics bounds,
 //! maximum feed rates, and thermal safety ceilings prior to execution.
 
-use std::collections::BTreeMap;
 use dryer_control_protocol::Command;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AxisLimit {
@@ -73,7 +73,9 @@ impl ToolpathAuditor {
                     }
                 }
                 Command::Home { axis, rate_um_s } => {
-                    if self.limits.max_feed_rate_um_s > 0 && *rate_um_s > self.limits.max_feed_rate_um_s {
+                    if self.limits.max_feed_rate_um_s > 0
+                        && *rate_um_s > self.limits.max_feed_rate_um_s
+                    {
                         diagnostics.push(AuditDiagnostic {
                             code: "A002".into(),
                             command_index: index,
@@ -90,7 +92,9 @@ impl ToolpathAuditor {
                     distance_um,
                     rate_um_s,
                 } => {
-                    if self.limits.max_feed_rate_um_s > 0 && *rate_um_s > self.limits.max_feed_rate_um_s {
+                    if self.limits.max_feed_rate_um_s > 0
+                        && *rate_um_s > self.limits.max_feed_rate_um_s
+                    {
                         diagnostics.push(AuditDiagnostic {
                             code: "A002".into(),
                             command_index: index,
@@ -137,8 +141,20 @@ mod tests {
 
     fn sample_limits() -> AuditLimits {
         let mut axes = BTreeMap::new();
-        axes.insert("x".into(), AxisLimit { min_um: 0, max_um: 200_000 });
-        axes.insert("y".into(), AxisLimit { min_um: 0, max_um: 200_000 });
+        axes.insert(
+            "x".into(),
+            AxisLimit {
+                min_um: 0,
+                max_um: 200_000,
+            },
+        );
+        axes.insert(
+            "y".into(),
+            AxisLimit {
+                min_um: 0,
+                max_um: 200_000,
+            },
+        );
 
         let mut heaters = BTreeMap::new();
         heaters.insert("hotend_heater".into(), 300_000);
@@ -154,9 +170,19 @@ mod tests {
     fn valid_toolpath_passes_audit() {
         let auditor = ToolpathAuditor::new(sample_limits());
         let cmds = vec![
-            Command::Home { axis: "x".into(), rate_um_s: 10_000 },
-            Command::SetHeaterTarget { heater: "hotend_heater".into(), target_milli_c: 200_000 },
-            Command::Move { axis: "x".into(), distance_um: 50_000, rate_um_s: 20_000 },
+            Command::Home {
+                axis: "x".into(),
+                rate_um_s: 10_000,
+            },
+            Command::SetHeaterTarget {
+                heater: "hotend_heater".into(),
+                target_milli_c: 200_000,
+            },
+            Command::Move {
+                axis: "x".into(),
+                distance_um: 50_000,
+                rate_um_s: 20_000,
+            },
         ];
         let report = auditor.audit(&cmds);
         assert!(report.passed);
@@ -168,22 +194,33 @@ mod tests {
     fn out_of_bounds_move_emits_a001() {
         let auditor = ToolpathAuditor::new(sample_limits());
         let cmds = vec![
-            Command::Home { axis: "x".into(), rate_um_s: 10_000 },
-            Command::Move { axis: "x".into(), distance_um: 250_000, rate_um_s: 20_000 },
+            Command::Home {
+                axis: "x".into(),
+                rate_um_s: 10_000,
+            },
+            Command::Move {
+                axis: "x".into(),
+                distance_um: 250_000,
+                rate_um_s: 20_000,
+            },
         ];
         let report = auditor.audit(&cmds);
         assert!(!report.passed);
         assert_eq!(report.diagnostics.len(), 1);
         assert_eq!(report.diagnostics[0].code, "A001");
-        assert!(report.diagnostics[0].message.contains("250000 um is outside bounds"));
+        assert!(report.diagnostics[0]
+            .message
+            .contains("250000 um is outside bounds"));
     }
 
     #[test]
     fn excessive_feed_rate_emits_a002() {
         let auditor = ToolpathAuditor::new(sample_limits());
-        let cmds = vec![
-            Command::Move { axis: "x".into(), distance_um: 10_000, rate_um_s: 100_000 },
-        ];
+        let cmds = vec![Command::Move {
+            axis: "x".into(),
+            distance_um: 10_000,
+            rate_um_s: 100_000,
+        }];
         let report = auditor.audit(&cmds);
         assert!(!report.passed);
         assert_eq!(report.diagnostics[0].code, "A002");
@@ -192,9 +229,10 @@ mod tests {
     #[test]
     fn excessive_temperature_target_emits_a003() {
         let auditor = ToolpathAuditor::new(sample_limits());
-        let cmds = vec![
-            Command::SetHeaterTarget { heater: "hotend_heater".into(), target_milli_c: 350_000 },
-        ];
+        let cmds = vec![Command::SetHeaterTarget {
+            heater: "hotend_heater".into(),
+            target_milli_c: 350_000,
+        }];
         let report = auditor.audit(&cmds);
         assert!(!report.passed);
         assert_eq!(report.diagnostics[0].code, "A003");

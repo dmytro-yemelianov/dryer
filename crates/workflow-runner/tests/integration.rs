@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use dryer_control_client::{CommandClient, FrameSink};
 use dryer_control_protocol::{Command, CommandEnvelope};
 use dryer_controller_daemon::ControllerSessionStatus;
-use dryer_simulator::{AxisCfg, HeaterCfg, SimController, SimTransport, TransportConfig, STEP_TICKS};
+use dryer_simulator::{
+    AxisCfg, HeaterCfg, SimController, SimTransport, TransportConfig, STEP_TICKS,
+};
 use dryer_toolpath_auditor::AxisLimit;
 use dryer_workflow_runner::{AuditLimits, RunnerConfig, RunnerState, WorkflowRunner};
 
@@ -97,7 +99,9 @@ fn integration_streaming_workflow_with_throttling_and_completion() {
         });
     }
 
-    let enqueued = runner.enqueue_batch(commands).expect("workflow enqueues cleanly");
+    let enqueued = runner
+        .enqueue_batch(commands)
+        .expect("workflow enqueues cleanly");
     assert_eq!(enqueued, 15);
     assert_eq!(runner.pending_count(), 15);
 

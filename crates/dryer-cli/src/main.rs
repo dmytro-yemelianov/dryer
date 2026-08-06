@@ -140,7 +140,10 @@ fn cmd_check(machine_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             println!("   Packages:    {}", resolved.packages.len());
         }
     } else {
-        eprintln!("❌ Resolution failed with {} diagnostics:", outcome.diagnostics.len());
+        eprintln!(
+            "❌ Resolution failed with {} diagnostics:",
+            outcome.diagnostics.len()
+        );
         for d in &outcome.diagnostics {
             eprintln!("   [{}] {}", d.code, d.message);
         }
@@ -198,7 +201,10 @@ fn cmd_verify_lock(lock_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         {
             let disk_hash = loaded_pkg.content_hash().map_err(|e| e.to_string())?;
             if disk_hash == locked_pkg.content_hash {
-                println!("   [OK] {} matches content digest {}", pkg_ref_str, locked_pkg.content_hash);
+                println!(
+                    "   [OK] {} matches content digest {}",
+                    pkg_ref_str, locked_pkg.content_hash
+                );
             } else {
                 eprintln!(
                     "   [DRIFT] {} content digest mismatch! Expected {}, found {}",
@@ -213,19 +219,22 @@ fn cmd_verify_lock(lock_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if mismatched > 0 {
-        eprintln!("❌ Lockfile verification failed with {} package mismatches/drift.", mismatched);
+        eprintln!(
+            "❌ Lockfile verification failed with {} package mismatches/drift.",
+            mismatched
+        );
         std::process::exit(1);
     } else {
-        println!("✅ Lockfile verification passed! All {} locked packages matched.", lockfile.packages.len());
+        println!(
+            "✅ Lockfile verification passed! All {} locked packages matched.",
+            lockfile.packages.len()
+        );
     }
 
     Ok(())
 }
 
-fn cmd_flash_plan(
-    lock_path: &Path,
-    controller: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_flash_plan(lock_path: &Path, controller: &str) -> Result<(), Box<dyn std::error::Error>> {
     let lock_bytes = fs::read_to_string(lock_path)?;
     let lockfile = Lockfile::from_yaml(&lock_bytes)?;
     let registry = find_registry();
@@ -272,8 +281,20 @@ fn cmd_audit(job_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let commands = load_job_commands(job_path)?;
 
     let mut axes = BTreeMap::new();
-    axes.insert("x".into(), AxisLimit { min_um: 0, max_um: 200_000 });
-    axes.insert("y".into(), AxisLimit { min_um: 0, max_um: 200_000 });
+    axes.insert(
+        "x".into(),
+        AxisLimit {
+            min_um: 0,
+            max_um: 200_000,
+        },
+    );
+    axes.insert(
+        "y".into(),
+        AxisLimit {
+            min_um: 0,
+            max_um: 200_000,
+        },
+    );
 
     let mut heaters = BTreeMap::new();
     heaters.insert("hotend_heater".into(), 300_000);
@@ -320,7 +341,8 @@ fn cmd_sim(job_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let len = encode_command(&frame, &mut buf).unwrap();
         buf.truncate(len);
 
-        sim.process_wire_frame(&buf).map_err(std::io::Error::other)?;
+        sim.process_wire_frame(&buf)
+            .map_err(std::io::Error::other)?;
     }
 
     let mut transport = SimTransport::new(TransportConfig::default());
@@ -339,8 +361,14 @@ fn cmd_daemon(lock_path: &Path, controller_id: &str) -> Result<(), Box<dyn std::
     let mut daemon = ControllerDaemon::new();
     daemon.register_controller(controller_id, 50_000);
 
-    println!("⚡ Dryer Controller Daemon initialized for lock '{}'", lockfile.lock_hash());
-    println!("   Active Controllers: {:?}", daemon.active_controller_ids());
+    println!(
+        "⚡ Dryer Controller Daemon initialized for lock '{}'",
+        lockfile.lock_hash()
+    );
+    println!(
+        "   Active Controllers: {:?}",
+        daemon.active_controller_ids()
+    );
     println!("   Daemon State:       {:?}", daemon.state());
 
     let summary = daemon.daemon_status_summary(1_000);
@@ -390,7 +418,8 @@ mod tests {
     fn cli_lock_command_generates_lockfile() {
         let root = workspace_root();
         let machine_path = root.join("examples/minimal-cartesian/machine.yaml");
-        let temp_lock = env::temp_dir().join(format!("test-dryer-lock-{}.lock", std::process::id()));
+        let temp_lock =
+            env::temp_dir().join(format!("test-dryer-lock-{}.lock", std::process::id()));
         cmd_lock(&machine_path, Some(&temp_lock)).unwrap();
         assert!(temp_lock.exists());
         let content = fs::read_to_string(&temp_lock).unwrap();

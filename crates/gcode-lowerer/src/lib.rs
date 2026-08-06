@@ -1,8 +1,8 @@
 //! G-code transpiler lowering slicer G-code into typed `dryer_control_protocol::Command` streams.
 
+use dryer_control_protocol::Command;
 use std::collections::BTreeMap;
 use std::fmt;
-use dryer_control_protocol::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoweringError {

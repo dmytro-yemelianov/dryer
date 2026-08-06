@@ -514,8 +514,8 @@ impl SimController {
         let message_type = frame[3];
         match message_type {
             COMMAND_MESSAGE_TYPE => {
-                let cmd_frame = decode_command(frame)
-                    .map_err(|e| format!("decode command error: {e:?}"))?;
+                let cmd_frame =
+                    decode_command(frame).map_err(|e| format!("decode command error: {e:?}"))?;
                 self.accept(cmd_frame.envelope);
                 Ok(None)
             }
@@ -1111,7 +1111,10 @@ mod tests {
         buf.truncate(len);
 
         let res = sim.process_wire_frame(&buf).unwrap();
-        assert!(res.is_none(), "command frame returns no direct byte response");
+        assert!(
+            res.is_none(),
+            "command frame returns no direct byte response"
+        );
 
         // 2. Send QueueStatus request frame (type 2)
         let status_req = dryer_control_protocol::QueueStatusFrame {
@@ -1128,7 +1131,10 @@ mod tests {
         let len = dryer_control_protocol::encode_queue_status(&status_req, &mut req_buf).unwrap();
         req_buf.truncate(len);
 
-        let status_resp_bytes = sim.process_wire_frame(&req_buf).unwrap().expect("status response");
+        let status_resp_bytes = sim
+            .process_wire_frame(&req_buf)
+            .unwrap()
+            .expect("status response");
         let status_resp = dryer_control_protocol::decode_queue_status(&status_resp_bytes).unwrap();
         assert_eq!(status_resp.sequence, 42);
         assert_eq!(status_resp.status.capacity as usize, sim.queue_capacity);
@@ -1137,10 +1143,14 @@ mod tests {
         // 3. Send ClockRequestFrame (type 3)
         let clock_req = dryer_control_protocol::ClockRequestFrame { sequence: 100 };
         let mut clock_req_buf = vec![0u8; dryer_control_protocol::CLOCK_REQUEST_FRAME_LEN];
-        let len = dryer_control_protocol::encode_clock_request(&clock_req, &mut clock_req_buf).unwrap();
+        let len =
+            dryer_control_protocol::encode_clock_request(&clock_req, &mut clock_req_buf).unwrap();
         clock_req_buf.truncate(len);
 
-        let clock_resp_bytes = sim.process_wire_frame(&clock_req_buf).unwrap().expect("clock response");
+        let clock_resp_bytes = sim
+            .process_wire_frame(&clock_req_buf)
+            .unwrap()
+            .expect("clock response");
         let clock_resp = dryer_control_protocol::decode_clock_response(&clock_resp_bytes).unwrap();
         assert_eq!(clock_resp.sequence, 100);
         assert_eq!(clock_resp.response.controller_receive, sim.now);
