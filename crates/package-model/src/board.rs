@@ -325,6 +325,46 @@ mod tests {
     }
 
     #[test]
+    fn example_mainboard_has_two_versions_and_only_the_newer_declares_downlinks() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
+        let reg = crate::LocalRegistry::load(&root);
+        let v1_0_0 = reg
+            .find_version(
+                "boards",
+                "example-mainboard",
+                &"1.0.0".parse().unwrap(),
+            )
+            .expect("1.0.0 still resolvable")
+            .board_payload()
+            .unwrap();
+        assert!(v1_0_0.downlinks.is_empty());
+        let latest = reg
+            .find("boards", "example-mainboard")
+            .expect("highest version")
+            .board_payload()
+            .unwrap();
+        assert_eq!(latest.package.version.to_string(), "1.1.0");
+        assert_eq!(latest.downlinks["can0"].kind, "can");
+    }
+
+    #[test]
+    fn example_toolhead_board_payload_parses() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
+        let reg = crate::LocalRegistry::load(&root);
+        let board = reg
+            .find("boards", "example-toolhead")
+            .expect("example toolhead board")
+            .board_payload()
+            .unwrap();
+        assert_eq!(board.connectors["motor0"].kind, "stepper_driver_socket");
+        assert!(board.transports.contains_key("can"));
+        assert_eq!(
+            board.flash.unwrap().methods["dfu"].select.usb_pid,
+            0xd004
+        );
+    }
+
+    #[test]
     fn asking_a_device_for_a_board_payload_is_a_typed_error() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
         let reg = crate::LocalRegistry::load(&root);

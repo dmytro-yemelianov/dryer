@@ -193,7 +193,9 @@ fn cmd_verify_lock(lock_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let parsed_ref = dryer_package_model::PackageRef::parse(pkg_ref_str)
             .map_err(|e| format!("invalid locked package ref '{pkg_ref_str}': {e}"))?;
 
-        if let Some(loaded_pkg) = registry.find(&parsed_ref.namespace, &parsed_ref.name) {
+        if let Some(loaded_pkg) =
+            registry.find_version(&parsed_ref.namespace, &parsed_ref.name, &parsed_ref.version)
+        {
             let disk_hash = loaded_pkg.content_hash().map_err(|e| e.to_string())?;
             if disk_hash == locked_pkg.content_hash {
                 println!("   [OK] {} matches content digest {}", pkg_ref_str, locked_pkg.content_hash);
