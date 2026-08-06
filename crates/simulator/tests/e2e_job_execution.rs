@@ -23,7 +23,11 @@ fn end_to_end_job_execution_pipeline() {
     let machine_path = root.join("examples/minimal-cartesian/machine.yaml");
     let machine_src = std::fs::read_to_string(&machine_path).unwrap();
     let _outcome = resolve_source(&machine_src, &registry);
-    assert!(_outcome.is_ok(), "machine resolves: {:?}", _outcome.diagnostics);
+    assert!(
+        _outcome.is_ok(),
+        "machine resolves: {:?}",
+        _outcome.diagnostics
+    );
 
     // 1. Resolve and extract workflow step
     let print_start = registry
@@ -61,7 +65,13 @@ fn end_to_end_job_execution_pipeline() {
 
     // 3. Run Pre-flight Auditor
     let mut axes = BTreeMap::new();
-    axes.insert("x".into(), AxisLimit { min_um: 0, max_um: 200_000 });
+    axes.insert(
+        "x".into(),
+        AxisLimit {
+            min_um: 0,
+            max_um: 200_000,
+        },
+    );
     let mut heaters = BTreeMap::new();
     heaters.insert("hotend_heater".into(), 300_000);
 

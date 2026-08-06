@@ -64,9 +64,9 @@ mod packages;
 mod requirements;
 mod safety;
 mod targets;
-mod workflows;
 #[cfg(test)]
 mod tests;
+mod workflows;
 
 #[cfg(test)]
 use capability::bus_satisfied;

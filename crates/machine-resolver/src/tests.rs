@@ -925,7 +925,10 @@ fn unpinned_safety_profile_name_with_invalid_chars_emits_e1500() {
 
 #[test]
 fn referenced_workflow_packages_are_included_in_resolution_closure() {
-    let with_workflow = format!("{}\nworkflows:\n  start: workflows/print-start\n", fixture());
+    let with_workflow = format!(
+        "{}\nworkflows:\n  start: workflows/print-start\n",
+        fixture()
+    );
     let o = resolve_source(&with_workflow, &registry());
     assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
     let pkgs = o.resolved.unwrap().packages;
@@ -981,7 +984,10 @@ fn workflow_requiring_missing_capability_emits_e1702() {
     std::fs::write(temporary.join("package.yaml"), replaced).unwrap();
     pkg.dir = temporary.clone();
 
-    let with_workflow = format!("{}\nworkflows:\n  start: workflows/print-start\n", fixture());
+    let with_workflow = format!(
+        "{}\nworkflows:\n  start: workflows/print-start\n",
+        fixture()
+    );
     let o = resolve_source(&with_workflow, &registry);
     std::fs::remove_dir_all(temporary).unwrap();
 
@@ -1014,7 +1020,10 @@ fn workflow_with_unresolved_lock_resource_emits_e1703() {
     std::fs::write(temporary.join("package.yaml"), replaced).unwrap();
     pkg.dir = temporary.clone();
 
-    let with_workflow = format!("{}\nworkflows:\n  start: workflows/print-start\n", fixture());
+    let with_workflow = format!(
+        "{}\nworkflows:\n  start: workflows/print-start\n",
+        fixture()
+    );
     let o = resolve_source(&with_workflow, &registry);
     std::fs::remove_dir_all(temporary).unwrap();
 
@@ -1047,7 +1056,10 @@ fn workflow_step_calling_unsupported_action_emits_e1704() {
     std::fs::write(temporary.join("package.yaml"), replaced).unwrap();
     pkg.dir = temporary.clone();
 
-    let with_workflow = format!("{}\nworkflows:\n  start: workflows/print-start\n", fixture());
+    let with_workflow = format!(
+        "{}\nworkflows:\n  start: workflows/print-start\n",
+        fixture()
+    );
     let o = resolve_source(&with_workflow, &registry);
     std::fs::remove_dir_all(temporary).unwrap();
 
@@ -1065,27 +1077,29 @@ fn corexy_delta_and_toolchanger_templates_resolve_cleanly() {
     let reg = registry();
 
     // 1. CoreXY template machine
-    let corexy_src = fixture().replace(
-        "class: cartesian-basic",
-        "class: corexy-standard",
-    );
+    let corexy_src = fixture().replace("class: cartesian-basic", "class: corexy-standard");
     let o = resolve_source(&corexy_src, &reg);
-    assert!(o.is_ok(), "corexy resolution diagnostics: {:?}", o.diagnostics);
+    assert!(
+        o.is_ok(),
+        "corexy resolution diagnostics: {:?}",
+        o.diagnostics
+    );
 
     // 2. Delta template machine
-    let delta_src = fixture().replace(
-        "class: cartesian-basic",
-        "class: delta-basic",
-    );
+    let delta_src = fixture().replace("class: cartesian-basic", "class: delta-basic");
     let o = resolve_source(&delta_src, &reg);
-    assert!(o.is_ok(), "delta resolution diagnostics: {:?}", o.diagnostics);
+    assert!(
+        o.is_ok(),
+        "delta resolution diagnostics: {:?}",
+        o.diagnostics
+    );
 
     // 3. Toolchanger template machine
-    let toolchanger_src = fixture().replace(
-        "class: cartesian-basic",
-        "class: toolchanger-corexy",
-    );
+    let toolchanger_src = fixture().replace("class: cartesian-basic", "class: toolchanger-corexy");
     let o = resolve_source(&toolchanger_src, &reg);
-    assert!(o.is_ok(), "toolchanger resolution diagnostics: {:?}", o.diagnostics);
+    assert!(
+        o.is_ok(),
+        "toolchanger resolution diagnostics: {:?}",
+        o.diagnostics
+    );
 }
-

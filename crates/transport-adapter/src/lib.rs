@@ -9,9 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
-pub use dryer_control_client::{
-    decode_clock_response_frame, decode_queue_status_frame, FrameSink,
-};
+pub use dryer_control_client::{decode_clock_response_frame, decode_queue_status_frame, FrameSink};
 pub use dryer_control_protocol::{
     decode_clock_request, decode_command, ClockRequestFrame, ClockResponseFrame, CommandFrame,
     DecodeError, QueueStatus, QueueStatusFrame, CLOCK_REQUEST_MESSAGE_TYPE,
@@ -372,8 +370,7 @@ impl FrameCodec {
 
                     let version = self.buffer[2];
                     let msg_type = self.buffer[3];
-                    let payload_len =
-                        u16::from_le_bytes([self.buffer[8], self.buffer[9]]) as usize;
+                    let payload_len = u16::from_le_bytes([self.buffer[8], self.buffer[9]]) as usize;
 
                     // Validate header bounds
                     let valid_header = version == PROTOCOL_VERSION
@@ -521,7 +518,8 @@ impl TransportStreamReader {
             .next_frame()
             .map_err(TransportAdapterError::Codec)?
         {
-            let frame = self.dispatch_frame(&frame_bytes, daemon, controller_id, current_host_us)?;
+            let frame =
+                self.dispatch_frame(&frame_bytes, daemon, controller_id, current_host_us)?;
             dispatched.push(frame);
         }
 

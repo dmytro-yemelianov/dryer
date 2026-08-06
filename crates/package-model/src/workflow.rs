@@ -71,7 +71,10 @@ impl core::fmt::Display for LoweringError {
                 write!(f, "action '{action}' requires argument '{argument}'")
             }
             Self::InvalidArgumentType { action, argument } => {
-                write!(f, "action '{action}' argument '{argument}' has an invalid type")
+                write!(
+                    f,
+                    "action '{action}' argument '{argument}' has an invalid type"
+                )
             }
         }
     }
@@ -120,10 +123,12 @@ fn extract_string(
     action: &str,
     name: &str,
 ) -> Result<String, LoweringError> {
-    let val = args.get(name).ok_or_else(|| LoweringError::MissingArgument {
-        action: action.to_string(),
-        argument: name.to_string(),
-    })?;
+    let val = args
+        .get(name)
+        .ok_or_else(|| LoweringError::MissingArgument {
+            action: action.to_string(),
+            argument: name.to_string(),
+        })?;
     val.as_str()
         .map(String::from)
         .ok_or_else(|| LoweringError::InvalidArgumentType {
@@ -137,10 +142,12 @@ fn extract_i64(
     action: &str,
     name: &str,
 ) -> Result<i64, LoweringError> {
-    let val = args.get(name).ok_or_else(|| LoweringError::MissingArgument {
-        action: action.to_string(),
-        argument: name.to_string(),
-    })?;
+    let val = args
+        .get(name)
+        .ok_or_else(|| LoweringError::MissingArgument {
+            action: action.to_string(),
+            argument: name.to_string(),
+        })?;
     val.as_i64()
         .ok_or_else(|| LoweringError::InvalidArgumentType {
             action: action.to_string(),
@@ -153,10 +160,12 @@ fn extract_u64(
     action: &str,
     name: &str,
 ) -> Result<u64, LoweringError> {
-    let val = args.get(name).ok_or_else(|| LoweringError::MissingArgument {
-        action: action.to_string(),
-        argument: name.to_string(),
-    })?;
+    let val = args
+        .get(name)
+        .ok_or_else(|| LoweringError::MissingArgument {
+            action: action.to_string(),
+            argument: name.to_string(),
+        })?;
     val.as_u64()
         .ok_or_else(|| LoweringError::InvalidArgumentType {
             action: action.to_string(),
@@ -448,8 +457,14 @@ steps:
         use super::*;
 
         let mut args = BTreeMap::new();
-        args.insert("heater".into(), serde_yaml::Value::String("hotend_heater".into()));
-        args.insert("target_milli_c".into(), serde_yaml::Value::Number(200_000.into()));
+        args.insert(
+            "heater".into(),
+            serde_yaml::Value::String("hotend_heater".into()),
+        );
+        args.insert(
+            "target_milli_c".into(),
+            serde_yaml::Value::Number(200_000.into()),
+        );
 
         let step = WorkflowStep {
             call: Some("heater.set_target".into()),
@@ -469,7 +484,10 @@ steps:
             call: Some("system.heartbeat".into()),
             with_arguments: BTreeMap::new(),
         };
-        assert_eq!(heartbeat_step.lower().unwrap(), dryer_control_protocol::Command::Heartbeat);
+        assert_eq!(
+            heartbeat_step.lower().unwrap(),
+            dryer_control_protocol::Command::Heartbeat
+        );
 
         let bad_step = WorkflowStep {
             call: Some("unknown.action".into()),

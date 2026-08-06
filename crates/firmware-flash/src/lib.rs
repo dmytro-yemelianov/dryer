@@ -564,9 +564,14 @@ impl fmt::Display for FlashExecutionError {
         match self {
             Self::PlanNotReady { reason } => write!(f, "flash plan not ready: {reason}"),
             Self::ChecksumMismatch { expected, actual } => {
-                write!(f, "artifact checksum mismatch: expected {expected}, actual {actual}")
+                write!(
+                    f,
+                    "artifact checksum mismatch: expected {expected}, actual {actual}"
+                )
             }
-            Self::DeviceNotFound { target } => write!(f, "flash target device '{target}' not found"),
+            Self::DeviceNotFound { target } => {
+                write!(f, "flash target device '{target}' not found")
+            }
             Self::TransportError { message } => write!(f, "flash transport error: {message}"),
         }
     }
@@ -621,7 +626,11 @@ impl FlashExecutor for MockFlashExecutor {
             bytes_written: artifact_bytes.len(),
             execution_log: vec![
                 format!("verified checksum {}", plan.artifact.expected_sha256),
-                format!("flashed {} bytes to {}", artifact_bytes.len(), plan.controller),
+                format!(
+                    "flashed {} bytes to {}",
+                    artifact_bytes.len(),
+                    plan.controller
+                ),
             ],
         })
     }
@@ -724,6 +733,9 @@ mod tests {
 
         // Mismatched checksum is rejected
         let bad_result = executor.execute_flash(&plan, b"corrupted_bytes");
-        assert!(matches!(bad_result, Err(FlashExecutionError::ChecksumMismatch { .. })));
+        assert!(matches!(
+            bad_result,
+            Err(FlashExecutionError::ChecksumMismatch { .. })
+        ));
     }
 }

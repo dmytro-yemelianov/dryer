@@ -1,8 +1,8 @@
 use dryer_firmware_build::ControllerBuildPlanArtifact;
 use dryer_firmware_flash::{
-    plan_dry_run, sha256, ArtifactPlan, ArtifactSpec, DiscoveredUsbDevice, DryRunRequest, FlashExecutionError,
-    FlashExecutor, FlashPlan, FlashToolMethod, MockFlashExecutor, NativeFlashExecutor, MatchStatus,
-    UsbSelectionRule, DeviceSelection, FLASH_PLAN_SCHEMA,
+    plan_dry_run, sha256, ArtifactPlan, ArtifactSpec, DeviceSelection, DiscoveredUsbDevice,
+    DryRunRequest, FlashExecutionError, FlashExecutor, FlashPlan, FlashToolMethod, MatchStatus,
+    MockFlashExecutor, NativeFlashExecutor, UsbSelectionRule, FLASH_PLAN_SCHEMA,
 };
 use dryer_machine_lock::Lockfile;
 use dryer_package_model::LocalRegistry;
@@ -68,12 +68,16 @@ fn integration_plan_dry_run_with_native_and_mock_executors() {
 
     // Verify ready plan execution with MockFlashExecutor
     let mut mock = MockFlashExecutor::default();
-    let mock_result = mock.execute_flash(&executable_plan, &artifact_bytes).unwrap();
+    let mock_result = mock
+        .execute_flash(&executable_plan, &artifact_bytes)
+        .unwrap();
     assert!(mock_result.success);
     assert_eq!(mock_result.controller_id, "mainboard");
 
     // Verify ready plan execution with NativeFlashExecutor (dry run mode)
-    let native_result = native.execute_flash(&executable_plan, &artifact_bytes).unwrap();
+    let native_result = native
+        .execute_flash(&executable_plan, &artifact_bytes)
+        .unwrap();
     assert!(native_result.success);
     assert_eq!(native_result.controller_id, "mainboard");
     assert!(native_result
@@ -139,17 +143,42 @@ fn integration_command_line_generation_for_all_supported_tools() {
 
     // DfuUtil
     let dfu_plan = make_plan("dfu_util", vec![dev_usb.clone()]);
-    let dfu_cmd = executor.build_command(&dfu_plan, Path::new("target/firmware.bin")).unwrap();
+    let dfu_cmd = executor
+        .build_command(&dfu_plan, Path::new("target/firmware.bin"))
+        .unwrap();
     assert_eq!(dfu_cmd.tool, FlashToolMethod::DfuUtil);
     assert_eq!(dfu_cmd.program, "dfu-util");
-    assert_eq!(dfu_cmd.args, vec!["-d", "1209:d003", "-S", "SN999", "-D", "target/firmware.bin", "-R"]);
+    assert_eq!(
+        dfu_cmd.args,
+        vec![
+            "-d",
+            "1209:d003",
+            "-S",
+            "SN999",
+            "-D",
+            "target/firmware.bin",
+            "-R"
+        ]
+    );
 
     // Stm32Flash
     let stm_plan = make_plan("stm32flash", vec![dev_usb.clone()]);
-    let stm_cmd = executor.build_command(&stm_plan, Path::new("target/firmware.bin")).unwrap();
+    let stm_cmd = executor
+        .build_command(&stm_plan, Path::new("target/firmware.bin"))
+        .unwrap();
     assert_eq!(stm_cmd.tool, FlashToolMethod::Stm32Flash);
     assert_eq!(stm_cmd.program, "stm32flash");
-    assert_eq!(stm_cmd.args, vec!["-w", "target/firmware.bin", "-v", "-g", "0x0", "/dev/ttyUSB0"]);
+    assert_eq!(
+        stm_cmd.args,
+        vec![
+            "-w",
+            "target/firmware.bin",
+            "-v",
+            "-g",
+            "0x0",
+            "/dev/ttyUSB0"
+        ]
+    );
 
     // Bossac
     let dev_acm = DiscoveredUsbDevice {
@@ -157,17 +186,45 @@ fn integration_command_line_generation_for_all_supported_tools() {
         ..dev_usb.clone()
     };
     let bossa_plan = make_plan("bossac", vec![dev_acm]);
-    let bossa_cmd = executor.build_command(&bossa_plan, Path::new("target/firmware.bin")).unwrap();
+    let bossa_cmd = executor
+        .build_command(&bossa_plan, Path::new("target/firmware.bin"))
+        .unwrap();
     assert_eq!(bossa_cmd.tool, FlashToolMethod::Bossac);
     assert_eq!(bossa_cmd.program, "bossac");
-    assert_eq!(bossa_cmd.args, vec!["-p", "/dev/ttyACM0", "-e", "-w", "-v", "-b", "-R", "target/firmware.bin"]);
+    assert_eq!(
+        bossa_cmd.args,
+        vec![
+            "-p",
+            "/dev/ttyACM0",
+            "-e",
+            "-w",
+            "-v",
+            "-b",
+            "-R",
+            "target/firmware.bin"
+        ]
+    );
 
     // Picotool
     let pico_plan = make_plan("picotool", vec![dev_usb.clone()]);
-    let pico_cmd = executor.build_command(&pico_plan, Path::new("target/firmware.uf2")).unwrap();
+    let pico_cmd = executor
+        .build_command(&pico_plan, Path::new("target/firmware.uf2"))
+        .unwrap();
     assert_eq!(pico_cmd.tool, FlashToolMethod::Picotool);
     assert_eq!(pico_cmd.program, "picotool");
-    assert_eq!(pico_cmd.args, vec!["load", "--bus", "2", "--address", "3", "target/firmware.uf2", "-x", "-v"]);
+    assert_eq!(
+        pico_cmd.args,
+        vec![
+            "load",
+            "--bus",
+            "2",
+            "--address",
+            "3",
+            "target/firmware.uf2",
+            "-x",
+            "-v"
+        ]
+    );
 }
 
 #[test]
@@ -230,7 +287,9 @@ fn integration_plan_drift_and_error_handling() {
     // Unready plan
     let mut unready_plan = plan.clone();
     unready_plan.ready = false;
-    unready_plan.blocked_reasons.push("device selection mismatch".into());
+    unready_plan
+        .blocked_reasons
+        .push("device selection mismatch".into());
     let err = native.execute_flash(&unready_plan, payload).unwrap_err();
     assert!(matches!(err, FlashExecutionError::PlanNotReady { .. }));
 
@@ -238,6 +297,8 @@ fn integration_plan_drift_and_error_handling() {
     let mut missing_dev_plan = plan.clone();
     missing_dev_plan.device_selection.status = MatchStatus::Missing;
     missing_dev_plan.device_selection.candidates.clear();
-    let err = native.execute_flash(&missing_dev_plan, payload).unwrap_err();
+    let err = native
+        .execute_flash(&missing_dev_plan, payload)
+        .unwrap_err();
     assert!(matches!(err, FlashExecutionError::DeviceNotFound { .. }));
 }

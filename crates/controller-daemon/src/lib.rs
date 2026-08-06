@@ -2,8 +2,8 @@
 //!
 //! Host-side controller state service, connection manager, and heartbeat guard for Dryer.
 
-use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub use dryer_control_client::{decode_queue_status_frame, MultiControllerClockSync};
 pub use dryer_control_protocol::{DecodeError, QueueStatus};
@@ -110,13 +110,15 @@ impl ControllerDaemon {
         self.state
     }
 
-    pub fn register_controller(&mut self, controller_id: impl Into<String>, heartbeat_timeout_us: u64) {
+    pub fn register_controller(
+        &mut self,
+        controller_id: impl Into<String>,
+        heartbeat_timeout_us: u64,
+    ) {
         let id = controller_id.into();
         let _ = self.cluster_sync.add_controller(&id);
-        self.sessions.insert(
-            id.clone(),
-            ControllerSession::new(id, heartbeat_timeout_us),
-        );
+        self.sessions
+            .insert(id.clone(), ControllerSession::new(id, heartbeat_timeout_us));
         if self.state == DaemonState::Uninitialized {
             self.state = DaemonState::Connected;
         }
@@ -163,8 +165,14 @@ impl ControllerDaemon {
         self.sessions.keys().cloned().collect()
     }
 
-    pub fn session_status(&self, controller_id: &str, current_host_us: u64) -> Option<ControllerSessionStatus> {
-        self.sessions.get(controller_id).map(|s| s.status(current_host_us))
+    pub fn session_status(
+        &self,
+        controller_id: &str,
+        current_host_us: u64,
+    ) -> Option<ControllerSessionStatus> {
+        self.sessions
+            .get(controller_id)
+            .map(|s| s.status(current_host_us))
     }
 
     pub fn daemon_status_summary(&self, current_host_us: u64) -> Vec<ControllerSessionStatus> {
