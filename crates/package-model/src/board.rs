@@ -329,11 +329,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
         let reg = crate::LocalRegistry::load(&root);
         let v1_0_0 = reg
-            .find_version(
-                "boards",
-                "example-mainboard",
-                &"1.0.0".parse().unwrap(),
-            )
+            .find_version("boards", "example-mainboard", &"1.0.0".parse().unwrap())
             .expect("1.0.0 still resolvable")
             .board_payload()
             .unwrap();
@@ -358,10 +354,7 @@ mod tests {
             .unwrap();
         assert_eq!(board.connectors["motor0"].kind, "stepper_driver_socket");
         assert!(board.transports.contains_key("can"));
-        assert_eq!(
-            board.flash.unwrap().methods["dfu"].select.usb_pid,
-            0xd004
-        );
+        assert_eq!(board.flash.unwrap().methods["dfu"].select.usb_pid, 0xd004);
     }
 
     #[test]

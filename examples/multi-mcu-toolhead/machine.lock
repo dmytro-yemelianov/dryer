@@ -9,7 +9,7 @@ registry_source:
 packages:
 - id: boards/example-mainboard@1.1.0
   manifest_hash: sha256:19b6fe1e4ba51d3f71829e8547b5a6157e7bbe85db23036d35b82345b5ae860a
-  content_hash: sha256:fe7c7a57d85019914169fa5a9bf5c8258d16040ad42fb35d3d6570f6e7474ab7
+  content_hash: sha256:3d48687fe1f445b0b63430569f424846b59e09754931b6f8f1038005f20e397e
 - id: boards/example-toolhead@1.0.0
   manifest_hash: sha256:8a49bc9bd0a080511ffa02afd80b9541e8799e8ad028834141a96e55e9947745
   content_hash: sha256:0d3708c6851a4cd1135a2c9ac9ea59e821efc546a37105fcc317906bb5d4d4f7

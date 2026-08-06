@@ -1,7 +1,7 @@
 {
   "schema": "dryer.controller-safety/v1",
   "controller": "mainboard",
-  "lock_hash": "sha256:5df6fc2e2f90067523121eb1ceae4781e46fc0a65c50812af1b9a13df6fd2587",
+  "lock_hash": "sha256:7c67381146c72a4d4b7a408119fe7cea4363a34295e734f3b8f203d4c1a51fcd",
   "safety_profile": {
     "id": "safety-profiles/desktop-fdm@1.0.0",
     "manifest_hash": "sha256:d628288ee439f9bc406bc5cc694802e344090724ff26fbc20ee726648882a7a5",

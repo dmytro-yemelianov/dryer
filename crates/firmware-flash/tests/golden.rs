@@ -47,9 +47,8 @@ fn flash_plan_is_drift_gated_for_every_example() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for (example, controller) in CASES {
         let dir = root.join("examples").join(example);
-        let lock =
-            Lockfile::from_yaml(&std::fs::read_to_string(dir.join("machine.lock")).unwrap())
-                .unwrap();
+        let lock = Lockfile::from_yaml(&std::fs::read_to_string(dir.join("machine.lock")).unwrap())
+            .unwrap();
         let build_plan = build_plan(&root, example, controller);
         let registry = LocalRegistry::load(&root.join("packages"));
         assert!(registry.diagnostics.is_empty());

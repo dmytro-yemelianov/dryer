@@ -266,7 +266,10 @@ tests exist and pass, not that a type was declared.
   chip's peripheral table; `role:` remains an open, unvalidated attribute;
   parse-time intra-document reference checking still runs before template
   expansion (source components still cannot reference template-provided
-  components).
+  components). The CAN toolhead's committed build-plan/image goldens also
+  list `usb_transport` in their firmware features because `chips/generic-mcu`'s
+  `firmware.features` is chip-derived rather than transport-derived, not
+  because the toolhead actually uses USB.
 
 ## Diagnostic code conventions (Phase 0 deliverable)
 

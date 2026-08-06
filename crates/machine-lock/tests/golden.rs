@@ -20,9 +20,8 @@ fn example_locks_are_drift_gated() {
             .unwrap_or_else(|| panic!("{example}: does not resolve"));
         let actual = lock(&source, &registry, &resolved).unwrap().to_yaml();
         let path = dir.join("machine.lock");
-        let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
-            panic!("{example}: missing golden {}\n\n{actual}", path.display())
-        });
+        let expected = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("{example}: missing golden {}\n\n{actual}", path.display()));
         assert_eq!(
             actual, expected,
             "{example}: machine.lock drifted; replace the golden deliberately with:\n{actual}"

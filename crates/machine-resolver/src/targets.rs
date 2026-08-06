@@ -174,46 +174,52 @@ pub(super) fn load(
 
     // --- controller parent cycles (E1123): whole-graph check ---
     // Every controller has at most one parent, so a cycle is detected by
-    // walking each controller's parent chain until it either terminates
-    // (no `transport.parent`) or revisits a controller already seen on
-    // this walk (which also catches self-parenting on the first step).
-    // `reported` avoids emitting the same cycle once per member.
-    let mut reported: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // walking each controller's parent chain, tracking the current walk's
+    // own path plus a `visited` set shared across every walk. A revisit of
+    // a node already in THIS walk's path is a real cycle, reported at the
+    // edge that actually closes it (the controller whose own
+    // transport.parent names the revisited node) — not at the arbitrary
+    // starting controller. A revisit of a node from an EARLIER, already
+    // completed walk (`visited` but not in the current `path`) means this
+    // chain merges into already-processed territory with no new cycle to
+    // report. `visited` also lets each controller's edge be traversed at
+    // most once across all walks (O(n) total, not O(n^2)), and prevents a
+    // controller whose chain merely feeds into a cycle from re-reporting it.
+    let mut visited: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for start in doc.controllers.keys() {
-        if reported.contains(start) {
+        let start = start.as_str();
+        if visited.contains(start) {
             continue;
         }
-        let mut path = vec![start.clone()];
-        let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-        seen.insert(start.as_str());
-        let mut current = start.as_str();
-        loop {
-            let Some(ctrl) = doc.controllers.get(current) else {
-                break;
-            };
+        let mut path: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        path.insert(start);
+        let mut current = start;
+        while let Some(ctrl) = doc.controllers.get(current) {
             let Some(parent) = &ctrl.transport.parent else {
                 break;
             };
             let Some((pctrl, _)) = parent.split_once('.') else {
                 break;
             };
-            if !seen.insert(pctrl) {
+            if path.contains(pctrl) {
                 diagnostics.push(
                     Diagnostic::error(
                         "E1123",
                         format!(
-                            "controller '{start}': transport.parent chain cycles back through '{pctrl}'"
+                            "controller '{current}': transport.parent chain cycles back through '{pctrl}'"
                         ),
                     )
-                    .at(format!("controllers.{start}.transport.parent")),
+                    .at(format!("controllers.{current}.transport.parent")),
                 );
-                reported.extend(path.iter().cloned());
-                reported.insert(pctrl.to_string());
                 break;
             }
-            path.push(pctrl.to_string());
+            if visited.contains(pctrl) {
+                break;
+            }
+            path.insert(pctrl);
             current = pctrl;
         }
+        visited.extend(path.iter().copied());
     }
 
     ControllerTargets {

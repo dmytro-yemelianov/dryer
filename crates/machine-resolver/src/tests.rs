@@ -1314,5 +1314,16 @@ fn the_multi_mcu_toolhead_example_resolves_with_no_errors_or_warnings_beyond_exp
             "unexpected non-informational diagnostic: {d:?}"
         );
     }
+    let codes: Vec<&str> = o.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    assert_eq!(
+        codes.iter().filter(|c| **c == "I1132").count(),
+        3,
+        "one I1132 per shadowed driver: {codes:?}"
+    );
+    assert_eq!(
+        codes.iter().filter(|c| **c == "I1133").count(),
+        3,
+        "one I1133 per template-contributed limit: {codes:?}"
+    );
 }
 

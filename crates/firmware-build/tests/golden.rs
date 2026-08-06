@@ -41,7 +41,10 @@ fn controller_safety_is_drift_gated_for_every_example() {
             .join(format!("controller-safety.{controller}.golden.json"));
         let expected = std::fs::read_to_string(&path)
             .unwrap_or_else(|_| panic!("missing golden {}\n\n{actual}", path.display()));
-        assert_eq!(actual, expected, "{example}/{controller}: controller safety artifact drifted");
+        assert_eq!(
+            actual, expected,
+            "{example}/{controller}: controller safety artifact drifted"
+        );
     }
 }
 
@@ -58,7 +61,10 @@ fn controller_build_plan_is_drift_gated_for_every_example() {
             .join(format!("controller-build-plan.{controller}.golden.json"));
         let expected = std::fs::read_to_string(&path)
             .unwrap_or_else(|_| panic!("missing golden {}\n\n{actual}", path.display()));
-        assert_eq!(actual, expected, "{example}/{controller}: controller build plan drifted");
+        assert_eq!(
+            actual, expected,
+            "{example}/{controller}: controller build plan drifted"
+        );
     }
 }
 
@@ -73,9 +79,16 @@ fn controller_image_is_drift_gated_for_every_example() {
             .join(example)
             .join(format!("controller-image.{controller}.golden.json"));
         let expected = std::fs::read(&path).unwrap_or_else(|_| {
-            panic!("missing golden {}\n\n{}", path.display(), built.image.to_pretty_json())
+            panic!(
+                "missing golden {}\n\n{}",
+                path.display(),
+                built.image.to_pretty_json()
+            )
         });
-        assert_eq!(built.bytes, expected, "{example}/{controller}: controller image drifted");
+        assert_eq!(
+            built.bytes, expected,
+            "{example}/{controller}: controller image drifted"
+        );
     }
 }
 

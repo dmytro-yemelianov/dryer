@@ -1,7 +1,7 @@
 {
   "schema": "dryer.controller-image/v1",
   "controller": "toolhead",
-  "lock_hash": "sha256:5df6fc2e2f90067523121eb1ceae4781e46fc0a65c50812af1b9a13df6fd2587",
+  "lock_hash": "sha256:7c67381146c72a4d4b7a408119fe7cea4363a34295e734f3b8f203d4c1a51fcd",
   "board": "boards/example-toolhead@1.0.0",
   "chip": "chips/generic-mcu@1.5.0",
   "target_triple": "thumbv7em-none-eabihf",

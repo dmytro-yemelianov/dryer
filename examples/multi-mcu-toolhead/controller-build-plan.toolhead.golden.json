@@ -1,7 +1,7 @@
 {
   "schema": "dryer.controller-build-plan/v2",
   "controller": "toolhead",
-  "lock_hash": "sha256:5df6fc2e2f90067523121eb1ceae4781e46fc0a65c50812af1b9a13df6fd2587",
+  "lock_hash": "sha256:7c67381146c72a4d4b7a408119fe7cea4363a34295e734f3b8f203d4c1a51fcd",
   "board": "boards/example-toolhead@1.0.0",
   "chip": "chips/generic-mcu@1.5.0",
   "target_triple": "thumbv7em-none-eabihf",
@@ -49,7 +49,7 @@
     "format": "dryer.controller-image/v1",
     "path": "build/toolhead/firmware.dryer.json",
     "size_bytes": 1252,
-    "sha256": "sha256:d4769b9adab43b80889b01bbc31c96db1dd311a6600dd6c440e50649c7f12453",
+    "sha256": "sha256:ba6c4e501baf2632fa4bb085666149f6a1aa158d08380c40204078fe34c029d8",
     "deployable": false
   }
 }

@@ -33,6 +33,11 @@ attributable to multi-controller topology, not kinematics.
 - `transports.*.peripheral` and `downlinks.*` are not validated against the
   chip's peripheral table (pre-existing gap for `transports`; now also true
   for `downlinks`).
+- The toolhead's committed build-plan/image goldens list `usb_transport` in
+  their firmware features, even though its runtime transport is CAN — this
+  comes from `chips/generic-mcu`'s `firmware.features` being chip-derived,
+  not transport-derived. Not a bug; recorded here because it could otherwise
+  read as an unexplained inconsistency.
 
 ## Regenerating goldens
 
