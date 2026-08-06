@@ -1,0 +1,62 @@
+api_version: dryer.machine/v0.1
+kind: Machine
+
+metadata:
+  name: corexy
+  description: Single-controller CoreXY machine using the corexy-standard template
+
+packages:
+  - boards/example-mainboard@1.0.0
+  - devices/tmc2209@2.1.0
+  - machines/corexy-standard@1.0.0
+  - safety-profiles/desktop-fdm@1.0.0
+
+controllers:
+  mainboard:
+    board: boards/example-mainboard
+    transport:
+      type: usb
+
+components:
+  x_motor:
+    type: stepper_motor
+    driver: x_driver
+    role: axis.x
+
+  x_driver:
+    type: tmc2209
+    connected_to: mainboard.motor0
+
+  y_motor:
+    type: stepper_motor
+    driver: y_driver
+    role: axis.y
+
+  y_driver:
+    type: tmc2209
+    connected_to: mainboard.motor1
+
+  z_motor:
+    type: stepper_motor
+    driver: z_driver
+
+  z_driver:
+    type: tmc2209
+    connected_to: mainboard.motor2
+
+  hotend_heater:
+    type: heater
+    output: mainboard.heater0
+    sensor: hotend_sensor
+    current: 2 A
+
+  hotend_sensor:
+    type: thermistor
+    model: generic-3950
+    input: mainboard.thermistor0
+
+kinematics:
+  type: corexy
+
+safety:
+  profile: safety-profiles/desktop-fdm

@@ -11,7 +11,7 @@ use std::path::Path;
 fn build_plan(root: &Path) -> ControllerBuildPlanArtifact {
     serde_json::from_str(
         &std::fs::read_to_string(
-            root.join("examples/minimal-cartesian/controller-build-plan.golden.json"),
+            root.join("examples/minimal-cartesian/controller-build-plan.mainboard.golden.json"),
         )
         .unwrap(),
     )
@@ -34,7 +34,8 @@ fn integration_plan_dry_run_with_native_and_mock_executors() {
         .unwrap(),
     )
     .unwrap();
-    let artifact_path = root.join("examples/minimal-cartesian/controller-image.golden.json");
+    let artifact_path =
+        root.join("examples/minimal-cartesian/controller-image.mainboard.golden.json");
 
     // Generate flash plan via plan_dry_run
     let plan = plan_dry_run(DryRunRequest {

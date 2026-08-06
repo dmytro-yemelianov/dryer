@@ -1,0 +1,77 @@
+{
+  "schema": "dryer.flash-plan/v0.2",
+  "mode": "dry_run",
+  "ready": false,
+  "controller": "toolhead",
+  "lock_hash": "sha256:7c67381146c72a4d4b7a408119fe7cea4363a34295e734f3b8f203d4c1a51fcd",
+  "board": "boards/example-toolhead@1.0.0",
+  "method": "dfu",
+  "transport": "usb",
+  "device_selection": {
+    "rule": {
+      "usb_vid": 4617,
+      "usb_pid": 53252
+    },
+    "status": "unique",
+    "candidates": [
+      {
+        "platform": "fixture",
+        "bus_id": "usb-fixture-1",
+        "location": "fixture-port-2.2",
+        "device_address": 8,
+        "usb_vid": 4617,
+        "usb_pid": 53252,
+        "serial_number": "DRYER-FIXTURE-002",
+        "manufacturer": "Example",
+        "product": "Toolhead DFU"
+      }
+    ]
+  },
+  "expected_current_firmware": "dryer-simulator/0.1.0",
+  "artifact": {
+    "format": "dryer.controller-image/v1",
+    "path": "build/toolhead/firmware.dryer.json",
+    "size_bytes": 1252,
+    "expected_sha256": "sha256:ba6c4e501baf2632fa4bb085666149f6a1aa158d08380c40204078fe34c029d8",
+    "observed_sha256": "sha256:ba6c4e501baf2632fa4bb085666149f6a1aa158d08380c40204078fe34c029d8",
+    "hash_matches": true,
+    "deployable": false,
+    "signature": null
+  },
+  "steps": [
+    {
+      "action": "inspect_artifact"
+    },
+    {
+      "action": "select_device"
+    },
+    {
+      "action": "check_current_firmware",
+      "expected": "dryer-simulator/0.1.0"
+    },
+    {
+      "action": "enter_bootloader",
+      "instruction": "Hold BOOT while tapping RESET, then release BOOT."
+    },
+    {
+      "action": "flash_artifact",
+      "method": "dfu",
+      "transport": "usb"
+    },
+    {
+      "action": "verify_artifact",
+      "method": "sha256"
+    },
+    {
+      "action": "confirm_board",
+      "expected": "boards/example-toolhead@1.0.0"
+    }
+  ],
+  "blocked_reasons": [
+    "artifact format 'dryer.controller-image/v1' is an inspectable reference image, not a deployable controller executable"
+  ],
+  "recovery": [
+    "Re-enter DFU mode and retry with the same locked artifact.",
+    "If DFU is unavailable, use the board's hardware recovery probe."
+  ]
+}

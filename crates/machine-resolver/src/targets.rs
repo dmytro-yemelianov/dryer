@@ -116,6 +116,112 @@ pub(super) fn load(
             },
         }
     }
+
+    // --- transport.parent structural checks (E1121/E1122) ---
+    // A second pass: the parent controller's board may sort after the
+    // child's in `doc.controllers` (a BTreeMap), so this only runs once
+    // every controller's board payload has been loaded above. Shape
+    // (`controller.port`) and "known controller" are already checked by
+    // the parser (E0502/E0503); a board that itself failed to load is
+    // already diagnosed above and is silently skipped here.
+    for (name, ctrl) in &doc.controllers {
+        let Some(parent) = &ctrl.transport.parent else {
+            continue;
+        };
+        let Some((pctrl, port)) = parent.split_once('.') else {
+            continue;
+        };
+        let Some(parent_board) = boards.get(pctrl) else {
+            continue;
+        };
+        match parent_board.downlinks.get(port) {
+            None => {
+                let available: Vec<&str> =
+                    parent_board.downlinks.keys().map(String::as_str).collect();
+                let mut d = Diagnostic::error(
+                    "E1121",
+                    format!(
+                        "controller '{name}': transport.parent '{parent}' names port '{port}', which board '{}' does not declare as a downlink",
+                        doc.controllers[pctrl].board
+                    ),
+                )
+                .at(format!("controllers.{name}.transport.parent"));
+                d = if available.is_empty() {
+                    d.suggest(format!(
+                        "'{}' declares no downlinks",
+                        doc.controllers[pctrl].board
+                    ))
+                } else {
+                    d.suggest(format!("available downlinks: {}", available.join(", ")))
+                };
+                diagnostics.push(d);
+            }
+            Some(downlink) if downlink.kind != ctrl.transport.kind => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1122",
+                        format!(
+                            "controller '{name}': transport type '{}' disagrees with parent downlink '{parent}' type '{}'",
+                            ctrl.transport.kind, downlink.kind
+                        ),
+                    )
+                    .at(format!("controllers.{name}.transport.type")),
+                );
+            }
+            Some(_) => {}
+        }
+    }
+
+    // --- controller parent cycles (E1123): whole-graph check ---
+    // Every controller has at most one parent, so a cycle is detected by
+    // walking each controller's parent chain, tracking the current walk's
+    // own path plus a `visited` set shared across every walk. A revisit of
+    // a node already in THIS walk's path is a real cycle, reported at the
+    // edge that actually closes it (the controller whose own
+    // transport.parent names the revisited node) — not at the arbitrary
+    // starting controller. A revisit of a node from an EARLIER, already
+    // completed walk (`visited` but not in the current `path`) means this
+    // chain merges into already-processed territory with no new cycle to
+    // report. `visited` also lets each controller's edge be traversed at
+    // most once across all walks (O(n) total, not O(n^2)), and prevents a
+    // controller whose chain merely feeds into a cycle from re-reporting it.
+    let mut visited: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for start in doc.controllers.keys() {
+        let start = start.as_str();
+        if visited.contains(start) {
+            continue;
+        }
+        let mut path: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        path.insert(start);
+        let mut current = start;
+        while let Some(ctrl) = doc.controllers.get(current) {
+            let Some(parent) = &ctrl.transport.parent else {
+                break;
+            };
+            let Some((pctrl, _)) = parent.split_once('.') else {
+                break;
+            };
+            if path.contains(pctrl) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "E1123",
+                        format!(
+                            "controller '{current}': transport.parent chain cycles back through '{pctrl}'"
+                        ),
+                    )
+                    .at(format!("controllers.{current}.transport.parent")),
+                );
+                break;
+            }
+            if visited.contains(pctrl) {
+                break;
+            }
+            path.insert(pctrl);
+            current = pctrl;
+        }
+        visited.extend(path.iter().copied());
+    }
+
     ControllerTargets {
         boards,
         chips,

@@ -60,20 +60,20 @@ The safety artifact records:
 
 Canonical compact JSON is hashed with SHA-256; pretty JSON is only a human-facing
 render of the same typed value. The minimal-Cartesian artifact is drift-gated at
-`examples/minimal-cartesian/controller-safety.golden.json`.
+`examples/minimal-cartesian/controller-safety.mainboard.golden.json`.
 
 The build-plan artifact additionally records exact board/chip/native-driver packages,
 target triple, toolchain and profile, protocol/ABI versions, integer memory and boot
 layout, sorted feature flags, resolved resources, and the complete locked safety
 partition. v2 also pins the reference image's format, bundle-relative path, exact byte
 length, SHA-256, and deployment eligibility. Its golden is
-`examples/minimal-cartesian/controller-build-plan.golden.json`.
+`examples/minimal-cartesian/controller-build-plan.mainboard.golden.json`.
 
 The reference backend serializes the same lock-bound target/resource/safety payload
 as canonical pretty JSON. Inspection rejects alternate encodings, unknown schemas,
 plan drift, and any byte difference from the locked build inputs. The exact backend
 output is drift-gated at
-`examples/minimal-cartesian/controller-image.golden.json`.
+`examples/minimal-cartesian/controller-image.mainboard.golden.json`.
 
 The output digest lives in the persisted build plan, not back inside `machine.lock`.
 The image embeds the lock hash, so inserting the image hash into that same lock would

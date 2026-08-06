@@ -6,10 +6,12 @@ use dryer_machine_lock::Lockfile;
 use dryer_package_model::LocalRegistry;
 use std::path::Path;
 
-fn build_plan(root: &Path) -> ControllerBuildPlanArtifact {
+fn build_plan(root: &Path, example: &str, controller: &str) -> ControllerBuildPlanArtifact {
     serde_json::from_str(
         &std::fs::read_to_string(
-            root.join("examples/minimal-cartesian/controller-build-plan.golden.json"),
+            root.join("examples")
+                .join(example)
+                .join(format!("controller-build-plan.{controller}.golden.json")),
         )
         .unwrap(),
     )
@@ -33,45 +35,58 @@ fn copy_tree(source: &Path, destination: &Path) {
     }
 }
 
-#[test]
-fn minimal_cartesian_flash_plan_is_drift_gated() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let lock = Lockfile::from_yaml(
-        &std::fs::read_to_string(root.join("examples/minimal-cartesian/machine.lock")).unwrap(),
-    )
-    .unwrap();
-    let build_plan = build_plan(&root);
-    let registry = LocalRegistry::load(&root.join("packages"));
-    assert!(registry.diagnostics.is_empty());
-    let inventory: Vec<DiscoveredUsbDevice> = serde_json::from_str(
-        &std::fs::read_to_string(
-            root.join("examples/minimal-cartesian/usb-inventory.fixture.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let artifact = root.join("examples/minimal-cartesian/controller-image.golden.json");
-    let plan = plan_dry_run(DryRunRequest {
-        controller: "mainboard",
-        lock: &lock,
-        build_plan: &build_plan,
-        registry: &registry,
-        discovered_devices: &inventory,
-        artifact: ArtifactSpec {
-            path: &artifact,
-            signature: None,
-        },
-        expected_current_firmware: "dryer-simulator/0.1.0",
-    })
-    .unwrap();
-    assert!(!plan.ready);
-    assert_eq!(plan.blocked_reasons.len(), 1);
-    assert!(plan.blocked_reasons[0].contains("not a deployable controller executable"));
+const CASES: &[(&str, &str)] = &[
+    ("minimal-cartesian", "mainboard"),
+    ("corexy", "mainboard"),
+    ("multi-mcu-toolhead", "mainboard"),
+    ("multi-mcu-toolhead", "toolhead"),
+];
 
-    let expected =
-        std::fs::read_to_string(root.join("examples/minimal-cartesian/flash-plan.golden.json"))
+#[test]
+fn flash_plan_is_drift_gated_for_every_example() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (example, controller) in CASES {
+        let dir = root.join("examples").join(example);
+        let lock = Lockfile::from_yaml(&std::fs::read_to_string(dir.join("machine.lock")).unwrap())
             .unwrap();
-    assert_eq!(plan.to_pretty_json(), expected);
+        let build_plan = build_plan(&root, example, controller);
+        let registry = LocalRegistry::load(&root.join("packages"));
+        assert!(registry.diagnostics.is_empty());
+        let inventory: Vec<DiscoveredUsbDevice> = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("usb-inventory.fixture.json")).unwrap(),
+        )
+        .unwrap();
+        let artifact = dir.join(format!("controller-image.{controller}.golden.json"));
+        let plan = plan_dry_run(DryRunRequest {
+            controller,
+            lock: &lock,
+            build_plan: &build_plan,
+            registry: &registry,
+            discovered_devices: &inventory,
+            artifact: ArtifactSpec {
+                path: &artifact,
+                signature: None,
+            },
+            expected_current_firmware: "dryer-simulator/0.1.0",
+        })
+        .unwrap();
+        assert!(!plan.ready);
+        assert_eq!(
+            plan.blocked_reasons.len(),
+            1,
+            "{example}/{controller}: {:?}",
+            plan.blocked_reasons
+        );
+        assert!(plan.blocked_reasons[0].contains("not a deployable controller executable"));
+        let expected =
+            std::fs::read_to_string(dir.join(format!("flash-plan.{controller}.golden.json")))
+                .unwrap();
+        assert_eq!(
+            plan.to_pretty_json(),
+            expected,
+            "{example}/{controller}: flash plan drifted"
+        );
+    }
 }
 
 #[test]
@@ -98,7 +113,7 @@ fn build_plan_drift_is_rejected_before_artifact_io() {
         &std::fs::read_to_string(root.join("examples/minimal-cartesian/machine.lock")).unwrap(),
     )
     .unwrap();
-    let mut build_plan = build_plan(&root);
+    let mut build_plan = build_plan(&root, "minimal-cartesian", "mainboard");
     build_plan.expected_artifact.sha256 =
         "sha256:0000000000000000000000000000000000000000000000000000000000000000".into();
     let registry = LocalRegistry::load(&root.join("packages"));
@@ -132,7 +147,7 @@ fn ambiguity_and_artifact_drift_are_both_blocking() {
         &std::fs::read_to_string(root.join("examples/minimal-cartesian/machine.lock")).unwrap(),
     )
     .unwrap();
-    let build_plan = build_plan(&root);
+    let build_plan = build_plan(&root, "minimal-cartesian", "mainboard");
     let registry = LocalRegistry::load(&root.join("packages"));
     let inventory: Vec<DiscoveredUsbDevice> = serde_json::from_str(
         &std::fs::read_to_string(
@@ -170,7 +185,7 @@ fn registry_source_drift_is_rejected_before_flash_planning() {
         &std::fs::read_to_string(root.join("examples/minimal-cartesian/machine.lock")).unwrap(),
     )
     .unwrap();
-    let build_plan = build_plan(&root);
+    let build_plan = build_plan(&root, "minimal-cartesian", "mainboard");
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -219,7 +234,7 @@ fn package_companion_file_drift_is_blocking() {
         &std::fs::read_to_string(root.join("examples/minimal-cartesian/machine.lock")).unwrap(),
     )
     .unwrap();
-    let build_plan = build_plan(&root);
+    let build_plan = build_plan(&root, "minimal-cartesian", "mainboard");
     let mut registry = LocalRegistry::load(&root.join("packages"));
     let board = registry
         .packages

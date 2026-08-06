@@ -99,7 +99,7 @@ tests exist and pass, not that a type was declared.
   lockfile v3 pins them; `dryer-firmware-build` emits the byte-stable, hashed
   `dryer.controller-safety/v1` artifact. The simulator consumes that artifact rather
   than rereading package policy. Golden:
-  `examples/minimal-cartesian/controller-safety.golden.json`; see
+  `examples/minimal-cartesian/controller-safety.mainboard.golden.json`; see
   [`firmware-build.md`](firmware-build.md). Slice 14 added **artifact planning**
   (§11.2 phase 12, §21.1): chip packages declare validated memory/boot budgets,
   target triple, toolchain, build profile, protocol/ABI versions, and feature flags;
@@ -222,6 +222,12 @@ tests exist and pass, not that a type was declared.
   management, pre-flight toolpath auditing, dynamic queue replenishment, horizon throttling, and underrun protection.
   Slice 30 extends `dryer-firmware-flash` with `NativeFlashExecutor`, supporting mutating hardware flash
   execution across `dfu-util`, `stm32flash`, `bossac`, and `picotool` methods with dry-run plan validation and drift protection.
+  Slice 31 adds `dryer-gcode-lowerer` (`crates/gcode-lowerer`), transpiling slicer-emitted `.gcode` into
+  typed `dryer_control_protocol::Command` streams, with `dryer-cli` gaining slicer `.gcode` file support
+  alongside its existing job-JSON input.
+  Slice 32 adds the Dryer OS web application control dashboard (`ui/`) and a `dryer ui` subcommand that
+  opens it in the browser. These two slices were previously implemented without a corresponding roadmap
+  entry; this line records them retroactively.
 - [x] **10. Cross-platform flash discovery, dry-run plans, and hardware flash execution** —
   `dryer-firmware-flash` enumerates USB devices through native Linux, macOS, and
   Windows backends, normalizes their portable identity, and deterministically applies
@@ -233,8 +239,37 @@ tests exist and pass, not that a type was declared.
   build-plan output pin, then emits versioned, byte-stable JSON containing expected
   current firmware, exact board identity, artifact format/deployment eligibility,
   signature slot, planned steps, and recovery. The fixture plan is
-  drift-gated at `examples/minimal-cartesian/flash-plan.golden.json`; see
+  drift-gated at `examples/minimal-cartesian/flash-plan.mainboard.golden.json`; see
   [`firmware-flash.md`](firmware-flash.md). `NativeFlashExecutor` implements mutating tool-based flash execution.
+- [x] **§30 example coverage** — `examples/corexy` (single controller, template-
+  expanded CoreXY, exercising I1132 driver-shadowing and I1133 template-limit
+  contribution) and `examples/multi-mcu-toolhead` (two controllers, CAN
+  toolhead, mirroring spec §5.1) now exist alongside `examples/minimal-cartesian`,
+  each with full golden parity (lockfile, safety partition, build plan,
+  controller image, flash plan) drift-gated in CI via table-driven tests.
+  Fixed a pre-existing bug: all three machine-class template packages
+  (`corexy-standard`, `delta-basic`, `toolchanger-corexy`) spelled the
+  acceleration unit `mm/s2` instead of `mm/s^2`, which made every machine that
+  let the template's `max_acceleration` flow through fail resolution; the
+  regression test that should have caught this was a no-op (`.replace()`
+  against a string that didn't occur in the fixture) and is now rewritten to
+  actually swap the package under test. Added a board `downlinks:` section
+  (`boards/example-mainboard@1.1.0`) plus three new resolver diagnostics
+  making `transport.parent` a checked reference: `E1121` (port not declared
+  as a downlink), `E1122` (child transport type disagrees with the parent
+  downlink's type), `E1123` (controller parent cycle, including
+  self-parenting). Deferred: the §19.2 cross-controller contract (state
+  ownership, clock uncertainty, link-loss behavior) remains unmodeled — the
+  multi-MCU example declares topology only; multi-controller execution
+  traces remain blocked on design Q3 (no synchronization protocol);
+  `transports.*.peripheral` and `downlinks.*` are not validated against the
+  chip's peripheral table; `role:` remains an open, unvalidated attribute;
+  parse-time intra-document reference checking still runs before template
+  expansion (source components still cannot reference template-provided
+  components). The CAN toolhead's committed build-plan/image goldens also
+  list `usb_transport` in their firmware features because `chips/generic-mcu`'s
+  `firmware.features` is chip-derived rather than transport-derived, not
+  because the toolhead actually uses USB.
 
 ## Diagnostic code conventions (Phase 0 deliverable)
 
@@ -259,7 +294,8 @@ tests exist and pass, not that a type was declared.
 - **Timing/bus-signal data model**: [`peripheral-mapping.md`](peripheral-mapping.md)
   is fully implemented (pin tables, wiring check, capabilities, step timing, bus matching).
 - **Simulated controller** (§29 step 9): implemented — see the step-9 entry above.
-- **Flash discovery and planning** (§29 step 10): implemented as a read-only boundary;
-  no mutating flash executor exists yet.
+- **Flash discovery and planning** (§29 step 10): implemented, including mutating
+  hardware flash execution via `NativeFlashExecutor` (Slice 30) — see the step-10
+  entry above.
 - Package schemas for chip/board/device/workflow kinds (§7–§9) land with the
   resolver slices that consume them; only `machine.schema.json` is normative today.

@@ -112,8 +112,8 @@ cargo run -p dryer-firmware-flash --example plan -- \
   examples/minimal-cartesian/machine.lock \
   packages \
   mainboard \
-  examples/minimal-cartesian/controller-build-plan.golden.json \
-  examples/minimal-cartesian/controller-image.golden.json \
+  examples/minimal-cartesian/controller-build-plan.mainboard.golden.json \
+  examples/minimal-cartesian/controller-image.mainboard.golden.json \
   dryer-simulator/0.1.0 \
   --inventory examples/minimal-cartesian/usb-inventory.fixture.json
 ```

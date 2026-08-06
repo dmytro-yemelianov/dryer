@@ -6,22 +6,27 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+const EXAMPLES: &[&str] = &["minimal-cartesian", "corexy", "multi-mcu-toolhead"];
+
 #[test]
-fn minimal_cartesian_lock_is_drift_gated() {
+fn example_locks_are_drift_gated() {
     let root = repo_root();
-    let source =
-        std::fs::read_to_string(root.join("examples/minimal-cartesian/machine.yaml")).unwrap();
-    let registry = LocalRegistry::load(&root.join("packages"));
-    let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
-        .resolved
-        .unwrap();
-    let actual = lock(&source, &registry, &resolved).unwrap().to_yaml();
-    let path = root.join("examples/minimal-cartesian/machine.lock");
-    let expected = std::fs::read_to_string(&path).unwrap();
-    assert_eq!(
-        actual, expected,
-        "machine.lock drifted; replace the golden deliberately with:\n{actual}"
-    );
+    for example in EXAMPLES {
+        let dir = root.join("examples").join(example);
+        let source = std::fs::read_to_string(dir.join("machine.yaml")).unwrap();
+        let registry = LocalRegistry::load(&root.join("packages"));
+        let resolved = dryer_machine_resolver::resolve_source(&source, &registry)
+            .resolved
+            .unwrap_or_else(|| panic!("{example}: does not resolve"));
+        let actual = lock(&source, &registry, &resolved).unwrap().to_yaml();
+        let path = dir.join("machine.lock");
+        let expected = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("{example}: missing golden {}\n\n{actual}", path.display()));
+        assert_eq!(
+            actual, expected,
+            "{example}: machine.lock drifted; replace the golden deliberately with:\n{actual}"
+        );
+    }
 }
 
 #[test]

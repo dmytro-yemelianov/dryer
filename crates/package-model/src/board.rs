@@ -25,6 +25,14 @@ pub struct BoardPackageFile {
     pub connectors: BTreeMap<String, Connector>,
     #[serde(default)]
     pub transports: BTreeMap<String, Transport>,
+    /// Ports this board offers to *child* controllers (e.g. a mainboard's
+    /// CAN bus that a toolhead board attaches to via
+    /// `transport: { parent: mainboard.can0 }`). Distinct from `transports`,
+    /// which describes the uplink this board's own controller uses: two
+    /// child controllers may legitimately share one downlink (CAN is
+    /// multi-drop), which an exclusive connector claim could not express.
+    #[serde(default)]
+    pub downlinks: BTreeMap<String, Downlink>,
     /// Board-specific flashing recipes. These describe how to select a
     /// bootloader device and how an operator can recover it; they never
     /// contain a machine-specific controller identity.
@@ -70,6 +78,12 @@ pub struct Connector {
 pub struct Transport {
     #[serde(default)]
     pub peripheral: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Downlink {
+    #[serde(rename = "type")]
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -311,6 +325,39 @@ mod tests {
     }
 
     #[test]
+    fn example_mainboard_has_two_versions_and_only_the_newer_declares_downlinks() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
+        let reg = crate::LocalRegistry::load(&root);
+        let v1_0_0 = reg
+            .find_version("boards", "example-mainboard", &"1.0.0".parse().unwrap())
+            .expect("1.0.0 still resolvable")
+            .board_payload()
+            .unwrap();
+        assert!(v1_0_0.downlinks.is_empty());
+        let latest = reg
+            .find("boards", "example-mainboard")
+            .expect("highest version")
+            .board_payload()
+            .unwrap();
+        assert_eq!(latest.package.version.to_string(), "1.1.0");
+        assert_eq!(latest.downlinks["can0"].kind, "can");
+    }
+
+    #[test]
+    fn example_toolhead_board_payload_parses() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
+        let reg = crate::LocalRegistry::load(&root);
+        let board = reg
+            .find("boards", "example-toolhead")
+            .expect("example toolhead board")
+            .board_payload()
+            .unwrap();
+        assert_eq!(board.connectors["motor0"].kind, "stepper_driver_socket");
+        assert!(board.transports.contains_key("can"));
+        assert_eq!(board.flash.unwrap().methods["dfu"].select.usb_pid, 0xd004);
+    }
+
+    #[test]
     fn asking_a_device_for_a_board_payload_is_a_typed_error() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
         let reg = crate::LocalRegistry::load(&root);
@@ -350,5 +397,39 @@ flash:
         );
         let codes: Vec<_> = diagnostics.iter().map(|diag| diag.code.as_str()).collect();
         assert_eq!(codes, ["E0616", "E0617", "E0618", "E0619", "E0619"]);
+    }
+
+    #[test]
+    fn downlinks_parse_when_declared() {
+        let board: BoardPackageFile = serde_yaml::from_str(
+            r#"
+package:
+  namespace: boards
+  name: with-downlink
+  version: 1.0.0
+  kind: board
+downlinks:
+  can0:
+    type: can
+"#,
+        )
+        .unwrap();
+        assert_eq!(board.downlinks.len(), 1);
+        assert_eq!(board.downlinks["can0"].kind, "can");
+    }
+
+    #[test]
+    fn downlinks_default_to_empty_when_absent() {
+        let board: BoardPackageFile = serde_yaml::from_str(
+            r#"
+package:
+  namespace: boards
+  name: no-downlink
+  version: 1.0.0
+  kind: board
+"#,
+        )
+        .unwrap();
+        assert!(board.downlinks.is_empty());
     }
 }

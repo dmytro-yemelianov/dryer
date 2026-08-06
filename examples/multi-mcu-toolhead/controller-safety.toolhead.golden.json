@@ -1,0 +1,26 @@
+{
+  "schema": "dryer.controller-safety/v1",
+  "controller": "toolhead",
+  "lock_hash": "sha256:7c67381146c72a4d4b7a408119fe7cea4363a34295e734f3b8f203d4c1a51fcd",
+  "safety_profile": {
+    "id": "safety-profiles/desktop-fdm@1.0.0",
+    "manifest_hash": "sha256:d628288ee439f9bc406bc5cc694802e344090724ff26fbc20ee726648882a7a5",
+    "content_hash": "sha256:85b1f6152a3c6828f8319840448432b2af3261992f2e22de2a880be42beb6d89"
+  },
+  "states": [
+    {
+      "component": "extruder_motor",
+      "class": "stepper_motor",
+      "resource": "motor0",
+      "state": "disabled"
+    },
+    {
+      "component": "hotend_heater",
+      "class": "heater",
+      "resource": "heater0",
+      "state": "off",
+      "heartbeat_timeout_us": 500000,
+      "sensor": "thermistor0"
+    }
+  ]
+}

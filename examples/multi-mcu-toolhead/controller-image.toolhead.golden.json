@@ -1,0 +1,48 @@
+{
+  "schema": "dryer.controller-image/v1",
+  "controller": "toolhead",
+  "lock_hash": "sha256:7c67381146c72a4d4b7a408119fe7cea4363a34295e734f3b8f203d4c1a51fcd",
+  "board": "boards/example-toolhead@1.0.0",
+  "chip": "chips/generic-mcu@1.5.0",
+  "target_triple": "thumbv7em-none-eabihf",
+  "toolchain": "rustc-1.85.0",
+  "build_profile": "release",
+  "protocol_version": "dryer.control/v1",
+  "abi_version": "dryer.controller/v1",
+  "flash_bytes": 524288,
+  "ram_bytes": 131072,
+  "bootloader_offset_bytes": 16384,
+  "features": [
+    "adc",
+    "pwm",
+    "step_scheduler",
+    "usb_transport"
+  ],
+  "native_drivers": [
+    "devices/tmc2209@2.1.0"
+  ],
+  "resolved_resources": {
+    "extruder_driver/connected_to": "motor0",
+    "hotend_heater/output": "heater0",
+    "hotend_sensor/input": "thermistor0"
+  },
+  "safety": {
+    "schema": "dryer.controller-safety/v1",
+    "states": [
+      {
+        "component": "extruder_motor",
+        "class": "stepper_motor",
+        "resource": "motor0",
+        "state": "disabled"
+      },
+      {
+        "component": "hotend_heater",
+        "class": "heater",
+        "resource": "heater0",
+        "state": "off",
+        "heartbeat_timeout_us": 500000,
+        "sensor": "thermistor0"
+      }
+    ]
+  }
+}

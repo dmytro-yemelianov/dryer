@@ -1,0 +1,65 @@
+package:
+  namespace: boards
+  name: example-toolhead
+  version: 1.0.0
+  kind: board
+
+chip: chips/generic-mcu
+
+hardware:
+  manufacturer: Example
+  model: Toolhead
+  revision: "1.0"
+
+connectors:
+  motor0:
+    kind: stepper_driver_socket
+    pins:
+      step: PE11
+      dir: PE10
+      enable: PE9
+      uart: PE7
+    voltage_domain: logic_3v3
+
+  heater0:
+    kind: power_output
+    pin: PA2
+    max_current: 5 A
+    supply: vin
+
+  thermistor0:
+    kind: analog_input
+    pin: PF4
+    pullup: 4.7 kOhm
+
+  accel0:
+    kind: accessory_socket
+    pins:
+      sck: PA5
+      miso: PA6
+      mosi: PA7
+      cs: PB0
+    voltage_domain: logic_3v3
+
+transports:
+  can:
+    peripheral: can1
+
+# Synthetic bootloader identity, distinct from example-mainboard's. The
+# runtime transport is CAN but the flash method is USB DFU — this matches
+# real CAN toolhead boards, and keeps flash discovery honest: selection
+# matches the board's own bootloader identity, never its runtime transport.
+flash:
+  default_method: dfu
+  methods:
+    dfu:
+      transport: usb
+      select:
+        usb_vid: "0x1209"
+        usb_pid: "0xd004"
+      enter_bootloader:
+        - Hold BOOT while tapping RESET, then release BOOT.
+      verify: sha256
+      recovery:
+        - Re-enter DFU mode and retry with the same locked artifact.
+        - If DFU is unavailable, use the board's hardware recovery probe.
