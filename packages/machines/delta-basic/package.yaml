@@ -17,4 +17,4 @@ template:
     type: delta
     limits:
       max_velocity: 250 mm/s
-      max_acceleration: 3000 mm/s2
+      max_acceleration: 3000 mm/s^2

@@ -17,5 +17,5 @@ template:
     type: corexy
     limits:
       max_velocity: 300 mm/s
-      max_acceleration: 5000 mm/s2
+      max_acceleration: 5000 mm/s^2
       max_z_velocity: 15 mm/s

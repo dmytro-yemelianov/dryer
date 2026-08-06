@@ -1064,27 +1064,45 @@ fn workflow_step_calling_unsupported_action_emits_e1704() {
 fn corexy_delta_and_toolchanger_templates_resolve_cleanly() {
     let reg = registry();
 
-    // 1. CoreXY template machine
-    let corexy_src = fixture().replace(
-        "class: cartesian-basic",
-        "class: corexy-standard",
-    );
+    // 1. CoreXY template machine — swap the machine-class package and the
+    // kinematics type, and drop the explicit limits entirely so all three
+    // template-supplied limits (including the buggy max_acceleration) get
+    // quantity-parsed and validated.
+    let corexy_src = fixture()
+        .replace(
+            "- machines/cartesian-basic@1.0.0",
+            "- machines/corexy-standard@1.0.0",
+        )
+        .replace(
+            "kinematics:\n  type: cartesian\n  limits:\n    max_velocity: 300 mm/s\n    max_acceleration: 3000 mm/s^2",
+            "kinematics:\n  type: corexy",
+        );
     let o = resolve_source(&corexy_src, &reg);
     assert!(o.is_ok(), "corexy resolution diagnostics: {:?}", o.diagnostics);
 
     // 2. Delta template machine
-    let delta_src = fixture().replace(
-        "class: cartesian-basic",
-        "class: delta-basic",
-    );
+    let delta_src = fixture()
+        .replace(
+            "- machines/cartesian-basic@1.0.0",
+            "- machines/delta-basic@1.0.0",
+        )
+        .replace(
+            "kinematics:\n  type: cartesian\n  limits:\n    max_velocity: 300 mm/s\n    max_acceleration: 3000 mm/s^2",
+            "kinematics:\n  type: delta",
+        );
     let o = resolve_source(&delta_src, &reg);
     assert!(o.is_ok(), "delta resolution diagnostics: {:?}", o.diagnostics);
 
     // 3. Toolchanger template machine
-    let toolchanger_src = fixture().replace(
-        "class: cartesian-basic",
-        "class: toolchanger-corexy",
-    );
+    let toolchanger_src = fixture()
+        .replace(
+            "- machines/cartesian-basic@1.0.0",
+            "- machines/toolchanger-corexy@1.0.0",
+        )
+        .replace(
+            "kinematics:\n  type: cartesian\n  limits:\n    max_velocity: 300 mm/s\n    max_acceleration: 3000 mm/s^2",
+            "kinematics:\n  type: corexy",
+        );
     let o = resolve_source(&toolchanger_src, &reg);
     assert!(o.is_ok(), "toolchanger resolution diagnostics: {:?}", o.diagnostics);
 }
