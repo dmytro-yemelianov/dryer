@@ -1,0 +1,118 @@
+lock_version: 5
+machine_hash: sha256:f63347037e066819fa47faa76e096cc13fd631307e64afa12164b0fd45898296
+resolver_version: 0.1.0
+registry_source:
+  schema: dryer.registry-source/v1
+  id: dryer-official
+  uri: git+https://github.com/dmytro-yemelianov/dryer.git?subdir=packages
+  descriptor_hash: sha256:6138256e51835c3138fd083c7da2701f6dc9d8ae7779f637c33942e3affcfc8c
+packages:
+- id: boards/example-mainboard@1.1.0
+  manifest_hash: sha256:19b6fe1e4ba51d3f71829e8547b5a6157e7bbe85db23036d35b82345b5ae860a
+  content_hash: sha256:fe7c7a57d85019914169fa5a9bf5c8258d16040ad42fb35d3d6570f6e7474ab7
+- id: boards/example-toolhead@1.0.0
+  manifest_hash: sha256:8a49bc9bd0a080511ffa02afd80b9541e8799e8ad028834141a96e55e9947745
+  content_hash: sha256:0d3708c6851a4cd1135a2c9ac9ea59e821efc546a37105fcc317906bb5d4d4f7
+- id: chips/generic-mcu@1.5.0
+  manifest_hash: sha256:b54a5da326f821ce530f62c989cae2696321c6bf9a197a01386a91bfba6f8644
+  content_hash: sha256:4cc20f50b28efe4864162ac51d22e6f83a75da4820baf4ab53161e7c271922bc
+- id: devices/tmc2209@2.1.0
+  manifest_hash: sha256:c74f5999cc67167ea1dfead1be2c8d65b6f0dee38f385d40920d8d279115daec
+  content_hash: sha256:ad83ae3a61b4d95a6131c8503449eefbfdabf094ad5e5c2ac13d234dceed0b22
+- id: machines/corexy-standard@1.0.0
+  manifest_hash: sha256:6eda574235743a24cb593f022407dcad20c0da5635598e145ef63c19eeb4eb8a
+  content_hash: sha256:369e364b4d545e87a95edeb34c348d3f926596ff7c83345e9c9d7d723e06d4bf
+- id: safety-profiles/desktop-fdm@1.0.0
+  manifest_hash: sha256:d628288ee439f9bc406bc5cc694802e344090724ff26fbc20ee726648882a7a5
+  content_hash: sha256:85b1f6152a3c6828f8319840448432b2af3261992f2e22de2a880be42beb6d89
+safety_profile:
+  id: safety-profiles/desktop-fdm@1.0.0
+  manifest_hash: sha256:d628288ee439f9bc406bc5cc694802e344090724ff26fbc20ee726648882a7a5
+  content_hash: sha256:85b1f6152a3c6828f8319840448432b2af3261992f2e22de2a880be42beb6d89
+controllers:
+  mainboard:
+    board: boards/example-mainboard
+    resolved_resources:
+      bed_heater/output: heater0
+      bed_sensor/input: thermistor0
+      x_driver/connected_to: motor0
+      y_driver/connected_to: motor1
+      z_driver/connected_to: motor2
+    safety:
+      schema: dryer.controller-safety/v1
+      states:
+      - component: bed_heater
+        class: heater
+        resource: heater0
+        state: off
+        heartbeat_timeout_us: 500000
+        sensor: thermistor0
+      - component: x_motor
+        class: stepper_motor
+        resource: motor0
+        state: disabled
+      - component: y_motor
+        class: stepper_motor
+        resource: motor1
+        state: disabled
+      - component: z_motor
+        class: stepper_motor
+        resource: motor2
+        state: disabled
+    build:
+      schema: dryer.controller-build-plan/v1
+      board: boards/example-mainboard@1.1.0
+      chip: chips/generic-mcu@1.5.0
+      target_triple: thumbv7em-none-eabihf
+      toolchain: rustc-1.85.0
+      build_profile: release
+      protocol_version: dryer.control/v1
+      abi_version: dryer.controller/v1
+      flash_bytes: 524288
+      ram_bytes: 131072
+      bootloader_offset_bytes: 16384
+      features:
+      - adc
+      - pwm
+      - step_scheduler
+      - usb_transport
+      native_drivers:
+      - devices/tmc2209@2.1.0
+  toolhead:
+    board: boards/example-toolhead
+    resolved_resources:
+      extruder_driver/connected_to: motor0
+      hotend_heater/output: heater0
+      hotend_sensor/input: thermistor0
+    safety:
+      schema: dryer.controller-safety/v1
+      states:
+      - component: extruder_motor
+        class: stepper_motor
+        resource: motor0
+        state: disabled
+      - component: hotend_heater
+        class: heater
+        resource: heater0
+        state: off
+        heartbeat_timeout_us: 500000
+        sensor: thermistor0
+    build:
+      schema: dryer.controller-build-plan/v1
+      board: boards/example-toolhead@1.0.0
+      chip: chips/generic-mcu@1.5.0
+      target_triple: thumbv7em-none-eabihf
+      toolchain: rustc-1.85.0
+      build_profile: release
+      protocol_version: dryer.control/v1
+      abi_version: dryer.controller/v1
+      flash_bytes: 524288
+      ram_bytes: 131072
+      bootloader_offset_bytes: 16384
+      features:
+      - adc
+      - pwm
+      - step_scheduler
+      - usb_transport
+      native_drivers:
+      - devices/tmc2209@2.1.0

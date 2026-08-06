@@ -1,0 +1,87 @@
+api_version: dryer.machine/v0.1
+kind: Machine
+
+metadata:
+  name: multi-mcu-toolhead
+  description: Two-controller CoreXY machine with a CAN toolhead, mirroring spec §5.1
+
+packages:
+  - boards/example-mainboard@1.1.0
+  - boards/example-toolhead@1.0.0
+  - devices/tmc2209@2.1.0
+  - machines/corexy-standard@1.0.0
+  - safety-profiles/desktop-fdm@1.0.0
+
+controllers:
+  mainboard:
+    board: boards/example-mainboard
+    transport:
+      type: usb
+  toolhead:
+    board: boards/example-toolhead
+    transport:
+      type: can
+      parent: mainboard.can0
+
+components:
+  x_motor:
+    type: stepper_motor
+    driver: x_driver
+    role: axis.x
+
+  x_driver:
+    type: tmc2209
+    connected_to: mainboard.motor0
+
+  y_motor:
+    type: stepper_motor
+    driver: y_driver
+    role: axis.y
+
+  y_driver:
+    type: tmc2209
+    connected_to: mainboard.motor1
+
+  z_motor:
+    type: stepper_motor
+    driver: z_driver
+
+  z_driver:
+    type: tmc2209
+    connected_to: mainboard.motor2
+
+  extruder_motor:
+    type: stepper_motor
+    driver: extruder_driver
+
+  extruder_driver:
+    type: tmc2209
+    connected_to: toolhead.motor0
+
+  hotend_heater:
+    type: heater
+    output: toolhead.heater0
+    sensor: hotend_sensor
+    current: 2 A
+
+  hotend_sensor:
+    type: thermistor
+    model: generic-3950
+    input: toolhead.thermistor0
+
+  bed_heater:
+    type: heater
+    output: mainboard.heater0
+    sensor: bed_sensor
+    current: 4 A
+
+  bed_sensor:
+    type: thermistor
+    model: generic-3950
+    input: mainboard.thermistor0
+
+kinematics:
+  type: corexy
+
+safety:
+  profile: safety-profiles/desktop-fdm

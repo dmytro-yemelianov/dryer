@@ -1301,3 +1301,18 @@ fn the_corexy_example_resolves_with_no_errors_or_warnings_beyond_expansion_notic
     );
 }
 
+#[test]
+fn the_multi_mcu_toolhead_example_resolves_with_no_errors_or_warnings_beyond_expansion_notices() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/multi-mcu-toolhead/machine.yaml");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let o = resolve_source(&source, &registry());
+    assert!(o.is_ok(), "diagnostics: {:#?}", o.diagnostics);
+    for d in &o.diagnostics {
+        assert!(
+            d.code.starts_with('I'),
+            "unexpected non-informational diagnostic: {d:?}"
+        );
+    }
+}
+

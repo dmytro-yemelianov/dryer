@@ -1,0 +1,69 @@
+{
+  "schema": "dryer.controller-build-plan/v2",
+  "controller": "mainboard",
+  "lock_hash": "sha256:5df6fc2e2f90067523121eb1ceae4781e46fc0a65c50812af1b9a13df6fd2587",
+  "board": "boards/example-mainboard@1.1.0",
+  "chip": "chips/generic-mcu@1.5.0",
+  "target_triple": "thumbv7em-none-eabihf",
+  "toolchain": "rustc-1.85.0",
+  "build_profile": "release",
+  "protocol_version": "dryer.control/v1",
+  "abi_version": "dryer.controller/v1",
+  "flash_bytes": 524288,
+  "ram_bytes": 131072,
+  "bootloader_offset_bytes": 16384,
+  "features": [
+    "adc",
+    "pwm",
+    "step_scheduler",
+    "usb_transport"
+  ],
+  "native_drivers": [
+    "devices/tmc2209@2.1.0"
+  ],
+  "resolved_resources": {
+    "bed_heater/output": "heater0",
+    "bed_sensor/input": "thermistor0",
+    "x_driver/connected_to": "motor0",
+    "y_driver/connected_to": "motor1",
+    "z_driver/connected_to": "motor2"
+  },
+  "safety": {
+    "schema": "dryer.controller-safety/v1",
+    "states": [
+      {
+        "component": "bed_heater",
+        "class": "heater",
+        "resource": "heater0",
+        "state": "off",
+        "heartbeat_timeout_us": 500000,
+        "sensor": "thermistor0"
+      },
+      {
+        "component": "x_motor",
+        "class": "stepper_motor",
+        "resource": "motor0",
+        "state": "disabled"
+      },
+      {
+        "component": "y_motor",
+        "class": "stepper_motor",
+        "resource": "motor1",
+        "state": "disabled"
+      },
+      {
+        "component": "z_motor",
+        "class": "stepper_motor",
+        "resource": "motor2",
+        "state": "disabled"
+      }
+    ]
+  },
+  "expected_artifact": {
+    "format": "dryer.controller-image/v1",
+    "path": "build/mainboard/firmware.dryer.json",
+    "size_bytes": 1591,
+    "sha256": "sha256:864f7c9af10d6e86cb38dc4e554966b84fbc465c8a45c4d8d51fc1b841e9b8a4",
+    "deployable": false
+  }
+}
