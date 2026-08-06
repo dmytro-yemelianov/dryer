@@ -1,0 +1,13 @@
+[
+  {
+    "platform": "fixture",
+    "bus_id": "usb-fixture-0",
+    "location": "fixture-port-2.1",
+    "device_address": 7,
+    "usb_vid": 4617,
+    "usb_pid": 53251,
+    "serial_number": "DRYER-FIXTURE-001",
+    "manufacturer": "Example",
+    "product": "Mainboard DFU"
+  }
+]
