@@ -392,11 +392,8 @@ fn matching_downlink_port_and_type_raises_neither_e1121_nor_e1122() {
 
 #[test]
 fn self_parenting_controller_is_e1123() {
-    let src = two_controller_source("can", "child.can0").replace(
-        "  child:\n    board: boards/example-mainboard\n    transport:\n      type: can\n      parent: child.can0",
-        "  child:\n    board: boards/example-mainboard\n    transport:\n      type: can\n      parent: child.can0",
-    );
     // child's own transport.parent points at itself.
+    let src = two_controller_source("can", "child.can0");
     let o = resolve_source(&src, &registry_with_downlink_board());
     let d = o
         .diagnostics
@@ -457,8 +454,6 @@ safety:
     assert_eq!(cycles.len(), 1, "one cycle reported once, not twice: {:?}", o.diagnostics);
 }
 ```
-
-Note: the `self_parenting_controller_is_e1123` test's `.replace(...)` is a deliberate no-op (both sides identical) — it exists only to make the self-parenting shape visually obvious at the call site; `two_controller_source("can", "child.can0")` alone already produces the self-parenting document. Simplify by calling `two_controller_source("can", "child.can0")` directly without the `.replace()` if preferred during implementation; both are equivalent.
 
 Then create the test fixture board `crates/machine-resolver/tests/fixtures/mainboard-with-downlinks/package.yaml` (copy of `packages/boards/example-mainboard/package.yaml`'s content, plus a `downlinks:` section), with matching `README.md` and `LICENSE`:
 
@@ -1185,24 +1180,7 @@ Run: `cargo test -p dryer-machine-resolver the_corexy_example_resolves_with_no_e
 
 Expected: PASS. If it fails, inspect the printed diagnostics and adjust `examples/corexy/machine.yaml` (e.g. a connector-claim conflict) before proceeding — do not touch the golden generation steps below until this passes.
 
-Now generate the lock. Create a throwaway test (or use a scratch `main.rs` via `cargo run --example`) that mirrors `crates/machine-lock/tests/golden.rs`'s existing `minimal_cartesian_lock_is_drift_gated` but points at `examples/corexy/machine.yaml` and an as-yet-nonexistent `examples/corexy/machine.lock`:
-
-Run:
-```bash
-cd /Users/dmytro/Documents/github/dryer
-cat > /tmp/gen_corexy_lock.rs <<'EOF'
-fn main() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let source = std::fs::read_to_string(root.join("examples/corexy/machine.yaml")).unwrap();
-    let registry = dryer_package_model::LocalRegistry::load(&root.join("packages"));
-    let resolved = dryer_machine_resolver::resolve_source(&source, &registry).resolved.unwrap();
-    let yaml = dryer_machine_lock::lock(&source, &registry, &resolved).unwrap().to_yaml();
-    std::fs::write(root.join("examples/corexy/machine.lock"), yaml).unwrap();
-}
-EOF
-```
-
-This is simplest run as a `#[test]` temporarily appended to `crates/machine-lock/tests/golden.rs` (since that crate already has the right dev-dependencies) rather than a standalone binary:
+Now generate the lock. Temporarily append a throwaway `#[ignore]`d test to `crates/machine-lock/tests/golden.rs` (that crate already has the right dev-dependencies), mirroring its existing `minimal_cartesian_lock_is_drift_gated` but pointed at `examples/corexy/machine.yaml` and an as-yet-nonexistent `examples/corexy/machine.lock`:
 
 ```rust
 #[test]
